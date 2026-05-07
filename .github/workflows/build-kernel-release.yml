@@ -41,7 +41,7 @@ on:
         description: 'Enter KernelSU build json. Supported types: ksun, ksu, rsksu, sukisu'
         required: true
         type: string
-        default: '[{"type":"sukisu","hash":"main"}]'
+        default: '[{"type":"rsksu","hash":"main"}]'
 
       optimize_level:
         description: 'Compiler optimization level'
