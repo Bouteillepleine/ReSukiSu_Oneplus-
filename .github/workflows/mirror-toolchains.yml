@@ -10,6 +10,7 @@ on:
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
+
     permissions:
       contents: write
 
@@ -87,8 +88,6 @@ jobs:
 
           echo "📄 Generating combined config list..."
 
-          echo "[" > all_configs.json
-
           mapfile -t files < <(find configs/ -name "*.json" | sort)
 
           if [ "${#files[@]}" -eq 0 ]; then
@@ -96,18 +95,35 @@ jobs:
             exit 1
           fi
 
-          for i in "${!files[@]}"; do
-            cat "${files[$i]}" >> all_configs.json
+          echo "🔍 Found ${#files[@]} config file(s):"
+          printf ' - %s\n' "${files[@]}"
 
-            if [[ $((i + 1)) -lt ${#files[@]} ]]; then
-              echo "," >> all_configs.json
-            fi
+          echo "🧪 Validating individual JSON files..."
+
+          for file in "${files[@]}"; do
+            echo "Checking $file"
+            jq -e . "$file" >/dev/null
           done
 
-          echo "]" >> all_configs.json
+          echo "📦 Merging JSON config files..."
+
+          jq -s '
+            map(
+              if type == "array" then
+                .[]
+              else
+                .
+              end
+            )
+          ' "${files[@]}" > all_configs.json
 
           echo "✅ Generated all_configs.json"
+
+          echo "📊 Total configs:"
           jq length all_configs.json
+
+          echo "🔎 First config preview:"
+          jq '.[0]' all_configs.json
 
       - name: Resolve Unique Projects
         id: set-matrix
@@ -275,6 +291,7 @@ jobs:
 
   mirror-to-release:
     name: mirror (${{ matrix.type_label }}, ${{ matrix.rev }})
+
     needs:
       - prepare-release
       - generate-mirror-matrix
