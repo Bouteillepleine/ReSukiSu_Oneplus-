@@ -1,17 +1,8 @@
 <div align="center">
 
-#OnePlus • ReSukiSU • SUSFS (Wild Fork)
+# OnePlus ● ReSukiSU ● SUSFS
 
-### OnePlus kernel builds with KernelSU variants, SukiSU Ultra, ReSukiSU and SUSFS
-
-[![KernelSU](https://img.shields.io/badge/KernelSU-Supported-green)](https://kernelsu.org/)
-[![KernelSU Next](https://img.shields.io/badge/KernelSU--Next-Supported-brightgreen)](https://kernelsu-next.github.io/webpage/)
-[![ReSukiSU](https://img.shields.io/badge/ReSukiSU-Supported-blue)](https://github.com/ReSukiSU/ReSukiSU)
-[![SukiSU Ultra](https://img.shields.io/badge/SukiSU%20Ultra-Supported-purple)](https://github.com/SukiSU-Ultra/SukiSU-Ultra)
-[![SUSFS](https://img.shields.io/badge/SUSFS-Integrated-orange)](https://gitlab.com/simonpunk/susfs4ksu)
-[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Automated%20Builds-blue)](https://github.com/Bouteillepleine/OnePlus_Kernel_SUSFS/actions)
-
-</div>
+### Wild Fork
 
 ---
 
