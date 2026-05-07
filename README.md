@@ -1,6 +1,6 @@
 <div align="center">
 
-# OnePlus Kernel SUSFS Builds (Wild Fork)
+#OnePlus • ReSukiSU • SUSFS (Wild Fork)
 
 ### OnePlus kernel builds with KernelSU variants, SukiSU Ultra, ReSukiSU and SUSFS
 
