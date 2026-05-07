@@ -88,42 +88,95 @@ jobs:
 
           echo "📄 Generating combined config list..."
 
-          mapfile -t files < <(find configs/ -name "*.json" | sort)
+          python3 <<'PY'
+          import json
+          import pathlib
+          import sys
 
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "::error::No config JSON files found in configs/"
-            exit 1
-          fi
+          config_dir = pathlib.Path("configs")
+          files = sorted(config_dir.rglob("*.json"))
 
-          echo "🔍 Found ${#files[@]} config file(s):"
-          printf ' - %s\n' "${files[@]}"
+          if not files:
+              print("::error::No config JSON files found in configs/")
+              sys.exit(1)
 
-          echo "🧪 Validating individual JSON files..."
+          print(f"🔍 Found {len(files)} config file(s):")
+          for file in files:
+              print(f" - {file}")
 
-          for file in "${files[@]}"; do
-            echo "Checking $file"
-            jq -e . "$file" >/dev/null
-          done
+          print("🧪 Loading and validating JSON files...")
 
-          echo "📦 Merging JSON config files..."
+          merged = []
 
-          jq -s '
-            map(
-              if type == "array" then
-                .[]
-              else
-                .
-              end
-            )
-          ' "${files[@]}" > all_configs.json
+          for file in files:
+              print(f"Checking {file}")
 
-          echo "✅ Generated all_configs.json"
+              text = ""
 
-          echo "📊 Total configs:"
+              try:
+                  # utf-8-sig handles files that accidentally contain a UTF-8 BOM.
+                  text = file.read_text(encoding="utf-8-sig")
+                  data = json.loads(text)
+
+              except json.JSONDecodeError as e:
+                  print(
+                      f"::error file={file},line={e.lineno},col={e.colno}::"
+                      f"Invalid JSON: {e.msg}"
+                  )
+
+                  lines = text.splitlines()
+                  start = max(e.lineno - 3, 0)
+                  end = min(e.lineno + 2, len(lines))
+
+                  print("---- JSON context ----")
+                  for idx in range(start, end):
+                      marker = ">>" if idx + 1 == e.lineno else "  "
+                      print(f"{marker} {idx + 1}: {lines[idx]}")
+                  print("----------------------")
+
+                  sys.exit(1)
+
+              except Exception as e:
+                  print(f"::error file={file}::Failed to read JSON: {e}")
+                  sys.exit(1)
+
+              if isinstance(data, list):
+                  for idx, item in enumerate(data):
+                      if not isinstance(item, dict):
+                          print(
+                              f"::error file={file}::"
+                              f"Array item #{idx} is not a JSON object."
+                          )
+                          sys.exit(1)
+
+                  merged.extend(data)
+
+              elif isinstance(data, dict):
+                  merged.append(data)
+
+              else:
+                  print(
+                      f"::error file={file}::"
+                      f"Top-level JSON must be an object or array, got {type(data).__name__}."
+                  )
+                  sys.exit(1)
+
+          with open("all_configs.json", "w", encoding="utf-8") as f:
+              json.dump(merged, f, indent=2, ensure_ascii=False)
+
+          print("✅ Generated all_configs.json")
+          print(f"📊 Total configs: {len(merged)}")
+
+          if merged:
+              print("🔎 First config preview:")
+              print(json.dumps(merged[0], indent=2, ensure_ascii=False))
+          PY
+
+          echo "🧪 Final all_configs.json validation..."
+          python3 -m json.tool all_configs.json >/dev/null
+
+          echo "📊 Total configs from final file:"
           jq length all_configs.json
-
-          echo "🔎 First config preview:"
-          jq '.[0]' all_configs.json
 
       - name: Resolve Unique Projects
         id: set-matrix
@@ -137,7 +190,7 @@ jobs:
           import subprocess
           import shutil
 
-          with open("all_configs.json", "r") as f:
+          with open("all_configs.json", "r", encoding="utf-8") as f:
               configs = json.load(f)
 
           unique_toolchains = {}
@@ -284,7 +337,7 @@ jobs:
               "include": list(unique_toolchains.values())
           }
 
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"matrix={json.dumps(matrix)}\n")
 
           print(f"✅ Found {len(unique_toolchains)} unique projects to mirror.")
