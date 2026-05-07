@@ -114,7 +114,6 @@ jobs:
               text = ""
 
               try:
-                  # utf-8-sig handles files that accidentally contain a UTF-8 BOM.
                   text = file.read_text(encoding="utf-8-sig")
                   data = json.loads(text)
 
@@ -195,9 +194,6 @@ jobs:
 
           unique_toolchains = {}
 
-          # IMPORTANT:
-          # Do NOT add AnyKernel3 here.
-          # AnyKernel3 must be synced directly from the manifest.
           TOOLCHAIN_MAP = {
               "clang/host/linux-x86": "clang",
               "prebuilts/rust": "rust",
@@ -301,10 +297,6 @@ jobs:
 
                       elif "git.codelinaro.org" in base_url or "gitlab.com" in base_url:
                           provider = "gitlab"
-
-                          # Canonical GitLab/CodeLinaro archive URL.
-                          # We still record it for logs, but GitLab/CodeLinaro jobs
-                          # will skip HTTP archive download and use git archive locally.
                           dl_url = f"{base_url}/{name}/-/archive/{rev}/{repo_leaf}-{rev}.tar.gz"
                           clone_url = f"{base_url}/{name}.git"
 
@@ -370,11 +362,12 @@ jobs:
 
           echo "📦 Installing required tools..."
           sudo apt-get update
-          sudo apt-get install -y aria2 pigz git
+          sudo apt-get install -y aria2 pigz git curl
 
           aria2c --version | head -n 1
           pigz --version || true
           git --version
+          curl --version | head -n 1
 
       - name: Sync & Upload
         shell: bash
@@ -458,48 +451,46 @@ jobs:
           fi
 
           download_with_aria2() {
-            echo "🌐 Trying aria2c with browser-like headers, limited to 180s..."
+            echo "🌐 Trying aria2c with longer timeout and resume..."
 
-            timeout 180s aria2c \
-              -x1 \
-              -s1 \
+            aria2c \
+              -x4 \
+              -s4 \
               -k1M \
               -j1 \
               --file-allocation=none \
               --console-log-level=warn \
               --summary-interval=30 \
               --retry-wait=10 \
-              --max-tries=1 \
-              --connect-timeout=30 \
-              --timeout=120 \
+              --max-tries=5 \
+              --connect-timeout=60 \
+              --timeout=600 \
               --lowest-speed-limit=1K \
               --allow-overwrite=true \
               --auto-file-renaming=false \
+              --continue=true \
               --header="User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36" \
-              --header="Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
-              --header="Accept-Language: en-US,en;q=0.9" \
-              --header="Connection: keep-alive" \
+              --header="Accept: */*" \
               -o "$FILENAME" \
               "$SOURCE_URL"
           }
 
           download_with_curl() {
-            echo "🌐 Trying curl fallback, limited to 180s..."
+            echo "🌐 Trying curl fallback with resume and longer timeout..."
 
-            timeout 180s curl \
+            curl \
               -L \
               --fail \
-              --retry 2 \
+              --continue-at - \
+              --retry 5 \
               --retry-delay 10 \
               --retry-all-errors \
-              --connect-timeout 30 \
-              --max-time 170 \
-              --speed-time 120 \
+              --connect-timeout 60 \
+              --max-time 3600 \
+              --speed-time 600 \
               --speed-limit 1024 \
               -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36" \
-              -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
-              -H "Accept-Language: en-US,en;q=0.9" \
-              -H "Connection: keep-alive" \
+              -H "Accept: */*" \
               -o "$FILENAME" \
               "$SOURCE_URL"
           }
@@ -574,29 +565,26 @@ jobs:
 
           download_ok=false
 
-          # CodeLinaro/GitLab archive generation is flaky for ALL prebuilts:
-          # clang, build-tools, rust, clang-tools, etc.
-          # It often hangs at 0B/0B or returns 403/timeout.
-          # So for GitLab/CodeLinaro providers, skip HTTP archive entirely.
           if [ "$PROVIDER" = "gitlab" ]; then
             echo "🧰 CodeLinaro/GitLab toolchain detected: $TYPE_LABEL"
             echo "🧰 Skipping HTTP archive and using git fetch + git archive directly."
+
             create_archive_from_git
             download_ok=true
+
           else
             if download_with_aria2; then
               download_ok=true
             else
-              echo "⚠️ aria2c failed or timed out."
-              rm -f "$FILENAME"
+              echo "⚠️ aria2c failed. Keeping partial file for curl resume."
 
               if download_with_curl; then
                 download_ok=true
               else
                 echo "⚠️ curl archive download also failed."
-                rm -f "$FILENAME"
 
-                if [ "$PROVIDER" = "github" ]; then
+                if [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "googlesource" ]; then
+                  echo "🧰 Falling back to git archive for provider: $PROVIDER"
                   create_archive_from_git
                   download_ok=true
                 else
@@ -618,7 +606,7 @@ jobs:
           fi
 
           FILE_SIZE="$(stat -c%s "$FILENAME")"
-          MAX_SIZE=2000000000 # ~1.86GB
+          MAX_SIZE=2000000000
 
           echo "📏 File size: $FILE_SIZE bytes"
 
@@ -658,6 +646,7 @@ jobs:
             fi
 
             echo "✅ Uploaded split archive parts for $FILENAME"
+
           else
             echo "📤 Uploading single file..."
             gh release upload "$TAG_NAME" "$FILENAME" --clobber --repo "$TARGET_REPO"
