@@ -136,7 +136,7 @@ jobs:
     steps:
       - name: 📊 Analyze Cache Health
         id: analysis
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -505,7 +505,7 @@ jobs:
 
     steps:
       - name: 🗑️ Delete Matching Caches
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -918,7 +918,7 @@ jobs:
 
     steps:
       - name: 🗑️ Delete Old Workflow Runs
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1094,7 +1094,7 @@ jobs:
 
     steps:
       - name: 📊 Generate Final Health Report
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
