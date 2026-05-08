@@ -74,6 +74,13 @@ Use ReSukiSU option:
 - [Kernel Flasher](https://github.com/fatalcoder524/KernelFlasher)
 - [Releases](https://github.com/Bouteillepleine/ReSukiSu_Oneplus-/releases)
 
+## 💝 Donations
+
+Any and all donations are appreciated!
+
+- PayPal: [paypal.me/fatalcoder524](https://paypal.me/fatalcoder524)
+- DM on Telegram for UPI donations!
+
 ## 🤝 Acknowledgments
 
 Thanks to:
