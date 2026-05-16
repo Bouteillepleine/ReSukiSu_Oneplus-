@@ -1571,9 +1571,17 @@ runs:
         echo "CONFIG_BBG=y" >> common/arch/arm64/configs/gki_defconfig
         sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' common/security/Kconfig
         
+        if grep -qxF $'\t\tconst char* symlink_target_link = inode->i_op->get_link(dentry, inode, NULL);' ./Baseband-guard/baseband_guard.c; then
+          echo "Applying BBG get_link fix"
+          if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/experimental/bbg/bbg_fix_get_link.patch"; then
+            echo "::error::BBG get_link patch failed. Dumping all .rej files:"
+            find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+            exit 1
+          fi
+        fi
         echo "✅ BBG LSM added"
         echo "::endgroup::"
-
+        
     - name: Apply KSU Hooks
       shell: bash
       if: ${{ env.NEED_HOOKS == 'true' }}
@@ -1581,7 +1589,12 @@ runs:
         set -euo pipefail
         echo "::group::Apply KSU hooks"
         cd "$COMMON_KERNEL_FOLDER"
-        patch -p1 < "$KERNEL_PATCHES_FOLDER/next/scope_min_manual_hooks_v1.4.patch"
+        echo "Applying KSU hooks patch..."
+        if ! patch -p1 < "$KERNEL_PATCHES_FOLDER/next/scope_min_manual_hooks_v1.4.patch"; then
+          echo "::error::KSU hooks patch failed. Dumping all .rej files:"
+          find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+          exit 1
+        fi
         echo "✅ KSU hooks applied"
         echo "::endgroup::"
 
@@ -1595,22 +1608,38 @@ runs:
         MIN_VERSION="5.16"
         if [ "$(printf '%s\n' "$KERNEL_VERSION" "$MIN_VERSION" | sort -V | head -n1)" = "$KERNEL_VERSION" ]; then
           echo "Patching ptrace!"
-          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/gki_ptrace.patch"
+          if ! patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/gki_ptrace.patch"; then
+            echo "::error::gki_ptrace patch failed. Dumping all .rej files:"
+            find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+            exit 1
+          fi
         else
           echo "Kernel >= $MIN_VERSION, skipping ptrace patch"
         fi
         if [ "$OP_HMBIRD" = true ]; then
           echo "Patching hmbird!"
           dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/fengchi_${OP_MODEL}_${OP_OS_VERSION}.patch"
-          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/fengchi_${OP_MODEL}_${OP_OS_VERSION}.patch"
+          if ! patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/fengchi_${OP_MODEL}_${OP_OS_VERSION}.patch"; then
+            echo "::error::hmbird fengchi patch failed. Dumping all .rej files:"
+            find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+            exit 1
+          fi
           dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
-          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
+          if ! patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"; then
+            echo "::error::hmbird overwriter patch failed. Dumping all .rej files:"
+            find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+            exit 1
+          fi
           chmod +x ./drivers/of/overwriter/overwrite_configs/convert_configs.sh
           dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
-          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
+          if ! patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"; then
+            echo "::error::hmbird config patch failed. Dumping all .rej files:"
+            find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+            exit 1
+          fi
         else
           echo "Hmbird not enabled, skipping fengchi patch"
-        fi        
+        fi
         
         echo "✅ Other patches applied"
         echo "::endgroup::"
@@ -1649,9 +1678,17 @@ runs:
         fi
         
         echo "Patching $(basename $NTSYNC_PATCH)!"
-        patch -p1 --forward < "$NTSYNC_PATCH"
+        if ! patch -p1 --forward < "$NTSYNC_PATCH"; then
+          echo "::error::$(basename $NTSYNC_PATCH) patch failed. Dumping all .rej files:"
+          find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+          exit 1
+        fi
         echo "Patching ntsync_base!"
-        patch -p1 --forward < "$NTSYNC_FOLDER/ntsync_base.patch"
+        if ! patch -p1 --forward < "$NTSYNC_FOLDER/ntsync_base.patch"; then
+          echo "::error::ntsync_base patch failed. Dumping all .rej files:"
+          find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+          exit 1
+        fi
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_NTSYNC=y
         EOF
@@ -1670,9 +1707,17 @@ runs:
         
         echo "Patching unicode!"
         if [ "$(printf '%s\n' "$KERNEL_VERSION" "$MIN_VERSION" | sort -V | head -n1)" = "$KERNEL_VERSION" ]; then
-            patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/unicode_bypass_fix_6.1-.patch"
+            if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/unicode_bypass_fix_6.1-.patch"; then
+              echo "::error::unicode_bypass_fix_6.1- patch failed. Dumping all .rej files:"
+              find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+              exit 1
+            fi
         else
-            patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/unicode_bypass_fix_6.1+.patch"
+            if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/unicode_bypass_fix_6.1+.patch"; then
+              echo "::error::unicode_bypass_fix_6.1+ patch failed. Dumping all .rej files:"
+              find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+              exit 1
+            fi
         fi
 
     - name: Add Tmpfs Support
@@ -1750,7 +1795,34 @@ runs:
         CONFIG_IP6_NF_TARGET_MASQUERADE=y
         EOF
         
-        patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/common/IPv6_NAT_FIX.patch"
+        echo "Patching IPv6_NAT_FIX.patch"
+        if ! patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/common/IPv6_NAT_FIX.patch"; then
+          echo "::error::IPv6_NAT_FIX patch failed. Dumping all .rej files:"
+          find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+          exit 1
+        fi
+        
+    - name: Add LXC / Droidspaces support
+      shell: bash
+      if: ${{ env.OP_LXC_DS == 'true' }}
+      run: |
+        set -euo pipefail
+        echo "Add Droidspaces Support"
+        cd "$COMMON_KERNEL_FOLDER"
+        
+        echo "Applying patch to enable SYSVIPC without breaking ABI"
+        if ! patch -p1 -F3 --forward < "$KERNEL_PATCHES_FOLDER/oneplus/lxc_droidspaces/enable_sysvipc.patch"; then
+          echo "::error::enable_sysvipc patch failed. Dumping all .rej files:"
+          find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+          exit 1
+        fi
+        
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        CONFIG_SYSVIPC = y
+        CONFIG_DEVTMPFS = y
+        CONFIG_PID_NS = y
+        CONFIG_POSIX_MQUEUE = y
+        EOF
 
     - name: Add Droidspaces support
       shell: bash
@@ -1763,26 +1835,54 @@ runs:
         echo "Applying patch to enable SYSVIPC without breaking ABI"
         case "$OP_BRANCH" in
           wild/sm8850|wild/sm8845)
-            patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_sysvipc_kabi_a16-6.12.patch"
+            if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_sysvipc_kabi_a16-6.12.patch"; then
+              echo "::error::fix_sysvipc_kabi_a16-6.12 patch failed. Dumping all .rej files:"
+              find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+              exit 1
+            fi
             ;;
           wild/sm8550|wild/sm7550)
-            patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_sysvipc_kabi_1_2_3.patch"
+            if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_sysvipc_kabi_1_2_3.patch"; then
+              echo "::error::fix_sysvipc_kabi_1_2_3 patch failed. Dumping all .rej files:"
+              find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+              exit 1
+            fi
             ;;
           wild/sm8450|wild/sm8475|wild/mt6895|wild/mt6983|wild/mt6789)
             if [ "$ANDROID_VER" = "android12" ] && [ "$KERNEL_VER" = "5.10" ]; then
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_sysvipc_kabi_bypass_a16-6.12_below.patch"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_abi_padding_for_posix_mqueue.patch"
+              if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_sysvipc_kabi_bypass_a16-6.12_below.patch"; then
+                echo "::error::fix_sysvipc_kabi_bypass_a16-6.12_below patch failed. Dumping all .rej files:"
+                find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+                exit 1
+              fi
+              if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_abi_padding_for_posix_mqueue.patch"; then
+                echo "::error::fix_abi_padding_for_posix_mqueue patch failed. Dumping all .rej files:"
+                find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+                exit 1
+              fi
             else
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch"
+              if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch"; then
+                echo "::error::fix_sysvipc_kabi_6_7_8 patch failed. Dumping all .rej files:"
+                find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+                exit 1
+              fi
             fi
             ;;
           *)
-            patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch"
+            if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch"; then
+              echo "::error::fix_sysvipc_kabi_6_7_8 patch failed. Dumping all .rej files:"
+              find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+              exit 1
+            fi
             ;;
         esac
         
         echo "Patch to fix kernel panic caused by oplus_bsp_midas"
-        patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/0001-Return-ghost-task-if-task-is-null-and-is-requested-b.patch"
+        if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/droidspaces/0001-Return-ghost-task-if-task-is-null-and-is-requested-b.patch"; then
+          echo "::error::ghost-task patch failed. Dumping all .rej files:"
+          find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+          exit 1
+        fi
         
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_SYSVIPC=y
@@ -1796,7 +1896,7 @@ runs:
         
         echo "✅ Droidspaces Support applied"
         echo "::endgroup::"
-
+        
     - name: Add Build based configs
       shell: bash
       run: |
@@ -1833,6 +1933,46 @@ runs:
         CONFIG_CMDLINE_FORCE=n
         CONFIG_RUST=y
         EOF
+
+    - name: Resolve KSU Symbol Dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+    
+        echo "::group::Resolve KSU Symbol Dependencies"
+        echo "Injecting fallback weak symbol into KernelSU resolver..."
+    
+        RESOLVER="$(find "$KSU_FOLDER" -name "symbol_resolver.c" | head -n 1)"
+    
+        if [ -n "$RESOLVER" ]; then
+          if ! grep -q "kallsyms_on_each_symbol" "$RESOLVER"; then
+            KERNEL_VER="${{ env.KERNEL_VER }}"    
+            
+            if [[ "$KERNEL_VER" == "5.15" ]]; then
+              echo "Applying weak symbol signature for kernel 5.15..."    
+              cat >> "$RESOLVER" << 'EOF'
+    
+              /* Fallback for missing symbols (Kernel < 6.4) */
+              int __attribute__((weak)) kallsyms_on_each_symbol(
+                  int (*fn)(void *, const char *, struct module *, unsigned long),
+                  void *data
+              ) {
+                  return 0;
+              }
+              EOF
+    
+              echo "✅ Weak symbol injected successfully."
+            else
+              echo "ℹ️ Kernel version $KERNEL_VER does not require this fallback."
+            fi
+          else
+            echo "✅ kallsyms_on_each_symbol already exists in resolver."
+          fi
+        else
+          echo "⚠️ symbol_resolver.c not found, skipping weak symbol injection."
+        fi
+    
+        echo "::endgroup::"
     
     - name: Customize Kernel Branding
       shell: bash
