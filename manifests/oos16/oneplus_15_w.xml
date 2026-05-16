@@ -9,14 +9,7 @@
 
   <project remote="origin" name="android_kernel_common_oneplus_sm8850" path="kernel_platform/common" revision="oneplus/sm8850_b_16.0.0_oneplus_15">
     <linkfile dest="kernel_platform/.source_date_epoch_dir" src="."/>
-  </project>
-
-  <project remote="origin" name="android_kernel_oneplus_sm8850" path="kernel_platform/soc-repo" revision="oneplus/sm8850_b_16.0.0_oneplus_15">
-    <linkfile dest="kernel_platform/WORKSPACE" src="bazel.WORKSPACE"/>
-    <linkfile dest="kernel_platform/build_with_bazel.py" src="build_with_bazel.py"/>
-    <linkfile dest="kernel_platform/device.bazelrc" src="device.bazelrc"/>
-    <linkfile dest="kernel_platform/build/qcom_build_extensions" src="qcom_build_extensions"/>
-  </project>
+  </project>  
 
   <project remote="origin" name="android_kernel_modules_and_devicetree_oneplus_sm8850" path="./" revision="oneplus/sm8850_b_16.0.0_oneplus_15"/>
 
