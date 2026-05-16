@@ -1946,20 +1946,22 @@ runs:
     
         if [ -n "$RESOLVER" ]; then
           if ! grep -q "kallsyms_on_each_symbol" "$RESOLVER"; then
-            KERNEL_VER="${{ env.KERNEL_VER }}"    
-            
+            KERNEL_VER="${{ env.KERNEL_VER }}"
+    
+            # Use appropriate function signature based on kernel version
             if [[ "$KERNEL_VER" == "5.15" ]]; then
-              echo "Applying weak symbol signature for kernel 5.15..."    
+              echo "Applying weak symbol signature for kernel 5.15..."
+    
               cat >> "$RESOLVER" << 'EOF'
     
-              /* Fallback for missing symbols (Kernel < 6.4) */
-              int __attribute__((weak)) kallsyms_on_each_symbol(
-                  int (*fn)(void *, const char *, struct module *, unsigned long),
-                  void *data
-              ) {
-                  return 0;
-              }
-              EOF
+        /* Fallback for missing symbols (Kernel < 6.4) */
+        int __attribute__((weak)) kallsyms_on_each_symbol(
+            int (*fn)(void *, const char *, struct module *, unsigned long),
+            void *data
+        ) {
+            return 0;
+        }
+          EOF
     
               echo "✅ Weak symbol injected successfully."
             else
