@@ -1386,7 +1386,6 @@ runs:
                 fs/read_write.c 2>/dev/null || true
           fi
 
-          # SukiSU / ReSukiSU sulog USER_ARG_NULL argument-type compatibility fix.
           SULOG_EVENT="./drivers/kernelsu/sulog/event.c"
 
           if [ -f "$SULOG_EVENT" ]; then
@@ -1622,23 +1621,24 @@ runs:
             sed -i '/^[[:space:]]*void initialize_fake_status(void)/,/^[[:space:]]*}/d' "$FAKE_STATUS_TARGET"
           fi
 
+          # Create fallback block without heredoc to avoid YAML/bash EOF indentation issues.
+          printf '%s\n' \
+            '' \
+            '/* ReSukiSU/SUSFS fallback fake SELinux status symbols */' \
+            'DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);' \
+            'bool ksu_selinux_hide_enabled __read_mostly = false;' \
+            'struct page *fake_status;' \
+            '' \
+            'void initialize_fake_status(void)' \
+            '{' \
+            '	if (fake_status)' \
+            '		return;' \
+            '' \
+            '	fake_status = alloc_page(GFP_KERNEL | __GFP_ZERO);' \
+            '}' \
+            > /tmp/ksu_fake_status_block.txt
+
           # Inject fallback after the include block, not at the top of the file.
-          cat > /tmp/ksu_fake_status_block.txt <<'EOF'
-
-          /* ReSukiSU/SUSFS fallback fake SELinux status symbols */
-          DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);
-          bool ksu_selinux_hide_enabled __read_mostly = false;
-          struct page *fake_status;
-          
-          void initialize_fake_status(void)
-          {
-          	if (fake_status)
-          		return;
-          
-          	fake_status = alloc_page(GFP_KERNEL | __GFP_ZERO);
-          }
-          EOF
-
           awk '
             BEGIN {
               inserted = 0
