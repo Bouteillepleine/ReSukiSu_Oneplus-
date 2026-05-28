@@ -2133,6 +2133,207 @@ runs:
         echo "Disabling GPUEB for MTK kernel 5.10"
         sed -i '/obj-y.*gpueb/d' "$COMMON_KERNEL_FOLDER/drivers/gpu/mediatek/Makefile"
 
+    - name: Add swap for full LTO builds
+      shell: bash
+      if: ${{ env.OP_LTO == 'full' }}
+      run: |
+        set -euo pipefail
+
+        echo "::group::Add swap for full LTO builds"
+
+        SIZE_GB="12"
+        ZRAM_GB="0"
+        MIN_FREE_DISK_GB="8"
+
+        is_non_negative_int() {
+          case "$1" in
+            ''|*[!0-9]*) return 1 ;;
+            *) [ "$1" -ge 0 ] ;;
+          esac
+        }
+
+        if ! is_non_negative_int "$SIZE_GB" || [ "$SIZE_GB" -lt 1 ]; then
+          echo "::error::SIZE_GB must be a positive integer, got: $SIZE_GB"
+          exit 1
+        fi
+
+        if ! is_non_negative_int "$ZRAM_GB"; then
+          echo "::error::ZRAM_GB must be a non-negative integer, got: $ZRAM_GB"
+          exit 1
+        fi
+
+        if ! is_non_negative_int "$MIN_FREE_DISK_GB"; then
+          echo "::error::MIN_FREE_DISK_GB must be a non-negative integer, got: $MIN_FREE_DISK_GB"
+          exit 1
+        fi
+
+        GB_BYTES=$((1024 * 1024 * 1024))
+        SIZE_BYTES=$((SIZE_GB * GB_BYTES))
+        MIN_FREE_BYTES=$((MIN_FREE_DISK_GB * GB_BYTES))
+
+        echo "Requested disk swap: ${SIZE_GB}G"
+        echo "Requested zram swap: ${ZRAM_GB}G, 0 means auto"
+        echo "Minimum free disk reserve: ${MIN_FREE_DISK_GB}G"
+
+        echo
+        echo "== resources before swap =="
+        free -h || true
+        swapon --show || true
+        df -h / || true
+
+        echo
+        echo "== calculating safe disk swap size =="
+
+        FREE_BYTES="$(df -B1 / | awk 'NR==2 {print $4}')"
+
+        if [ -z "$FREE_BYTES" ] || [ "$FREE_BYTES" -le 0 ]; then
+          echo "::warning::Could not determine free disk space; continuing with requested swap size"
+          SAFE_SIZE_BYTES="$SIZE_BYTES"
+        else
+          MAX_SAFE_BYTES=$((FREE_BYTES - MIN_FREE_BYTES))
+
+          if [ "$MAX_SAFE_BYTES" -le 0 ]; then
+            echo "::warning::Not enough free disk to keep ${MIN_FREE_DISK_GB}G reserve; disk swap will be skipped"
+            SAFE_SIZE_BYTES=0
+          elif [ "$MAX_SAFE_BYTES" -lt "$SIZE_BYTES" ]; then
+            SAFE_SIZE_BYTES="$MAX_SAFE_BYTES"
+            SAFE_SIZE_GB=$((SAFE_SIZE_BYTES / GB_BYTES))
+
+            if [ "$SAFE_SIZE_GB" -lt 1 ]; then
+              echo "::warning::Safe disk swap size below 1G; disk swap will be skipped"
+              SAFE_SIZE_BYTES=0
+            else
+              SAFE_SIZE_BYTES=$((SAFE_SIZE_GB * GB_BYTES))
+              echo "::warning::Reducing disk swap from ${SIZE_GB}G to ${SAFE_SIZE_GB}G to preserve ${MIN_FREE_DISK_GB}G free disk"
+            fi
+          else
+            SAFE_SIZE_BYTES="$SIZE_BYTES"
+            SAFE_SIZE_GB="$SIZE_GB"
+          fi
+        fi
+
+        echo
+        echo "== try zram swap =="
+
+        sudo modprobe zram || true
+
+        if [ "$ZRAM_GB" -eq 0 ]; then
+          MEM_TOTAL_KB="$(awk '/MemTotal:/ {print $2}' /proc/meminfo)"
+          MEM_TOTAL_GB="$((MEM_TOTAL_KB / 1024 / 1024))"
+
+          ZRAM_GB="$((MEM_TOTAL_GB / 2))"
+
+          if [ "$ZRAM_GB" -lt 2 ]; then
+            ZRAM_GB=2
+          fi
+
+          if [ "$ZRAM_GB" -gt 8 ]; then
+            ZRAM_GB=8
+          fi
+        fi
+
+        if [ "$ZRAM_GB" -gt 0 ] && [ -b /dev/zram0 ]; then
+          echo "Attempting zram swap: ${ZRAM_GB}G"
+
+          sudo swapoff /dev/zram0 2>/dev/null || true
+          echo 1 | sudo tee /sys/block/zram0/reset >/dev/null 2>&1 || true
+
+          if [ -f /sys/block/zram0/comp_algorithm ]; then
+            if grep -qw zstd /sys/block/zram0/comp_algorithm; then
+              echo zstd | sudo tee /sys/block/zram0/comp_algorithm >/dev/null || true
+            elif grep -qw lz4 /sys/block/zram0/comp_algorithm; then
+              echo lz4 | sudo tee /sys/block/zram0/comp_algorithm >/dev/null || true
+            fi
+          fi
+
+          if echo "${ZRAM_GB}G" | sudo tee /sys/block/zram0/disksize >/dev/null &&
+             sudo mkswap /dev/zram0 &&
+             sudo swapon -p 100 /dev/zram0; then
+            echo "✅ zram swap enabled on /dev/zram0 (${ZRAM_GB}G)"
+          else
+            echo "::warning::zram swap setup failed; continuing with disk swap"
+          fi
+        else
+          echo "zram unavailable or disabled; continuing with disk swap"
+        fi
+
+        try_swap() {
+          local size="$1"
+          local label="$2"
+
+          if [ "$size" -lt "$GB_BYTES" ]; then
+            echo "::warning::Skipping ${label} disk swap because size is below 1G"
+            return 1
+          fi
+
+          sudo swapoff /swapfile 2>/dev/null || true
+          sudo rm -f /swapfile
+
+          echo
+          echo "== creating ${label} disk swap =="
+
+          if command -v fallocate >/dev/null 2>&1; then
+            if ! sudo fallocate -l "$size" /swapfile; then
+              echo "::warning::fallocate ${label} swap failed; trying dd"
+              sudo rm -f /swapfile
+
+              if ! sudo dd if=/dev/zero of=/swapfile bs=1M count="$((size / 1024 / 1024))" status=progress; then
+                echo "::warning::dd ${label} swap failed"
+                sudo rm -f /swapfile
+                return 1
+              fi
+            fi
+          else
+            if ! sudo dd if=/dev/zero of=/swapfile bs=1M count="$((size / 1024 / 1024))" status=progress; then
+              echo "::warning::dd ${label} swap failed"
+              sudo rm -f /swapfile
+              return 1
+            fi
+          fi
+
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon -p 10 /swapfile
+
+          echo "✅ disk swap enabled: ${label}"
+        }
+
+        if [ "$SAFE_SIZE_BYTES" -gt 0 ]; then
+          SAFE_SIZE_GB=$((SAFE_SIZE_BYTES / GB_BYTES))
+
+          if ! try_swap "$SAFE_SIZE_BYTES" "${SAFE_SIZE_GB}G"; then
+            FALLBACK_GB="$((SAFE_SIZE_GB / 2))"
+
+            if [ "$FALLBACK_GB" -lt 4 ]; then
+              FALLBACK_GB=4
+            fi
+
+            if [ "$FALLBACK_GB" -gt "$SAFE_SIZE_GB" ]; then
+              FALLBACK_GB="$SAFE_SIZE_GB"
+            fi
+
+            if [ "$FALLBACK_GB" -ge 1 ]; then
+              echo "::warning::${SAFE_SIZE_GB}G swap setup failed; falling back to ${FALLBACK_GB}G"
+              try_swap "$((FALLBACK_GB * GB_BYTES))" "${FALLBACK_GB}G" || true
+            fi
+          fi
+        else
+          echo "::warning::Disk swap skipped due to insufficient safe free space"
+        fi
+
+        echo
+        echo "== tuning vm settings for full LTO build =="
+        sudo sysctl vm.swappiness=80 || true
+        sudo sysctl vm.vfs_cache_pressure=200 || true
+        sudo sysctl vm.dirty_background_ratio=5 || true
+        sudo sysctl vm.dirty_ratio=10 || true
+
+        echo
+        echo "== resources after swap =="
+        free -h || true
+        swapon --show || true
+        df -h / || true
+
     - name: Build Kernel
       id: build_kernel_step
       shell: bash
