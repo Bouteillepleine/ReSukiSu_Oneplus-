@@ -1557,7 +1557,7 @@ runs:
         #   undefined symbol: initialize_fake_status
         #
         # SUSFS v2.1.0 expects:
-        #   struct page *fake_status;
+        #   extern struct page *fake_status;
         #
         # Do NOT define fake_status as char[].
         #
@@ -1578,6 +1578,24 @@ runs:
             -e 'my_sel_open_handle_status' \
             --include='*.c' --include='*.h' || true
 
+          # Add required headers near the include section.
+          grep -q '#include <linux/jump_label.h>' "$FAKE_STATUS_TARGET" || \
+            sed -i '/^#include /a #include <linux/jump_label.h>' "$FAKE_STATUS_TARGET"
+
+          grep -q '#include <linux/mm.h>' "$FAKE_STATUS_TARGET" || \
+            sed -i '/^#include /a #include <linux/mm.h>' "$FAKE_STATUS_TARGET"
+
+          grep -q '#include <linux/gfp.h>' "$FAKE_STATUS_TARGET" || \
+            sed -i '/^#include /a #include <linux/gfp.h>' "$FAKE_STATUS_TARGET"
+
+          grep -q '#include <linux/types.h>' "$FAKE_STATUS_TARGET" || \
+            sed -i '/^#include /a #include <linux/types.h>' "$FAKE_STATUS_TARGET"
+
+          grep -q '#include <linux/cache.h>' "$FAKE_STATUS_TARGET" || \
+            sed -i '/^#include /a #include <linux/cache.h>' "$FAKE_STATUS_TARGET"
+
+          # Remove extern declarations from the file containing my_sel_open_handle_status.
+          # These externs may point to missing, static, or LTO-hidden symbols.
           sed -i \
             -e '/extern .*fake_status_initialize_key/d' \
             -e '/extern .*ksu_selinux_hide_enabled/d' \
@@ -1585,65 +1603,66 @@ runs:
             -e '/extern .*initialize_fake_status/d' \
             "$FAKE_STATUS_TARGET"
 
-          grep -q '#include <linux/jump_label.h>' "$FAKE_STATUS_TARGET" || \
-            sed -i '1i#include <linux/jump_label.h>' "$FAKE_STATUS_TARGET"
+          # Remove any previous bad fallback injection from earlier runs.
+          sed -i \
+            -e '/DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);/d' \
+            -e '/bool ksu_selinux_hide_enabled __read_mostly = false;/d' \
+            -e '/bool ksu_selinux_hide_enabled = false;/d' \
+            -e '/char fake_status\[PAGE_SIZE\];/d' \
+            -e '/struct page \*fake_status;/d' \
+            "$FAKE_STATUS_TARGET"
 
-          grep -q '#include <linux/mm.h>' "$FAKE_STATUS_TARGET" || \
-            sed -i '1i#include <linux/mm.h>' "$FAKE_STATUS_TARGET"
-
-          grep -q '#include <linux/gfp.h>' "$FAKE_STATUS_TARGET" || \
-            sed -i '1i#include <linux/gfp.h>' "$FAKE_STATUS_TARGET"
-
-          grep -q '#include <linux/highmem.h>' "$FAKE_STATUS_TARGET" || \
-            sed -i '1i#include <linux/highmem.h>' "$FAKE_STATUS_TARGET"
-
-          grep -q '#include <linux/string.h>' "$FAKE_STATUS_TARGET" || \
-            sed -i '1i#include <linux/string.h>' "$FAKE_STATUS_TARGET"
-
-          grep -q '#include <linux/types.h>' "$FAKE_STATUS_TARGET" || \
-            sed -i '1i#include <linux/types.h>' "$FAKE_STATUS_TARGET"
-
-          if ! grep -Eq '^[[:space:]]*DEFINE_STATIC_KEY_(FALSE|TRUE)\(fake_status_initialize_key\)' "$FAKE_STATUS_TARGET"; then
-            echo "Injecting fake_status_initialize_key into $FAKE_STATUS_TARGET"
-
-            sed -i '/#include <linux\/jump_label.h>/a\
-          DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);' "$FAKE_STATUS_TARGET"
-          else
-            echo "fake_status_initialize_key already defined in $FAKE_STATUS_TARGET"
+          # Remove previous initialize_fake_status() fallback if it was injected.
+          if grep -q '^void initialize_fake_status(void)' "$FAKE_STATUS_TARGET"; then
+            sed -i '/^void initialize_fake_status(void)/,/^}/d' "$FAKE_STATUS_TARGET"
           fi
 
-          if ! grep -Eq '^[[:space:]]*bool[[:space:]]+ksu_selinux_hide_enabled' "$FAKE_STATUS_TARGET"; then
-            echo "Injecting ksu_selinux_hide_enabled into $FAKE_STATUS_TARGET"
-
-            sed -i '/DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);/a\
-          bool ksu_selinux_hide_enabled __read_mostly = false;' "$FAKE_STATUS_TARGET"
-          else
-            echo "ksu_selinux_hide_enabled already defined in $FAKE_STATUS_TARGET"
+          # Also handle earlier injected version that may have leading indentation.
+          if grep -q '^[[:space:]]*void initialize_fake_status(void)' "$FAKE_STATUS_TARGET"; then
+            sed -i '/^[[:space:]]*void initialize_fake_status(void)/,/^[[:space:]]*}/d' "$FAKE_STATUS_TARGET"
           fi
 
-          if ! grep -Eq '^[[:space:]]*struct[[:space:]]+page[[:space:]]+\*fake_status' "$FAKE_STATUS_TARGET"; then
-            echo "Injecting struct page *fake_status into $FAKE_STATUS_TARGET"
+          # Inject fallback after the include block, not at the top of the file.
+          cat > /tmp/ksu_fake_status_block.txt <<'EOF'
 
-            sed -i '/bool ksu_selinux_hide_enabled __read_mostly = false;/a\
-          struct page *fake_status;' "$FAKE_STATUS_TARGET"
-          else
-            echo "fake_status already defined in $FAKE_STATUS_TARGET"
-          fi
+          /* ReSukiSU/SUSFS fallback fake SELinux status symbols */
+          DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);
+          bool ksu_selinux_hide_enabled __read_mostly = false;
+          struct page *fake_status;
+          
+          void initialize_fake_status(void)
+          {
+          	if (fake_status)
+          		return;
+          
+          	fake_status = alloc_page(GFP_KERNEL | __GFP_ZERO);
+          }
+          EOF
 
-          if ! grep -Eq '^[[:space:]]*void[[:space:]]+initialize_fake_status[[:space:]]*\(void\)' "$FAKE_STATUS_TARGET"; then
-            echo "Injecting initialize_fake_status() into $FAKE_STATUS_TARGET"
+          awk '
+            BEGIN {
+              inserted = 0
+            }
 
-            sed -i '/struct page \*fake_status;/a\
-            void initialize_fake_status(void)\
-            {\
-            	if (fake_status)\
-            		return;\
-            \
-            	fake_status = alloc_page(GFP_KERNEL | __GFP_ZERO);\
-            }' "$FAKE_STATUS_TARGET"
-          else
-            echo "initialize_fake_status already defined in $FAKE_STATUS_TARGET"
-          fi
+            /^#include / {
+              print
+              next
+            }
+
+            inserted == 0 {
+              while ((getline line < "/tmp/ksu_fake_status_block.txt") > 0) {
+                print line
+              }
+              close("/tmp/ksu_fake_status_block.txt")
+              inserted = 1
+            }
+
+            {
+              print
+            }
+          ' "$FAKE_STATUS_TARGET" > "${FAKE_STATUS_TARGET}.tmp"
+
+          mv "${FAKE_STATUS_TARGET}.tmp" "$FAKE_STATUS_TARGET"
 
           echo "SELinux fake-status symbol state after fix:"
           grep -Rnw "$FAKE_STATUS_TARGET" \
@@ -1652,6 +1671,9 @@ runs:
             -e 'fake_status' \
             -e 'initialize_fake_status' \
             -e 'my_sel_open_handle_status' || true
+
+          echo "Top of $FAKE_STATUS_TARGET after fake-status fix:"
+          sed -n '1,100p' "$FAKE_STATUS_TARGET"
         else
           echo "my_sel_open_handle_status not found, skipping fake-status fix"
         fi
