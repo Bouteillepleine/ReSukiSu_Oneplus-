@@ -1355,10 +1355,14 @@ runs:
             fi
           fi
 
-          if grep -q "KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c 2>/dev/null; then
-            grep -q "#define KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c || \
-              sed -i '1i\#ifndef KERNEL_SU_VERSION\n#define KERNEL_SU_VERSION 40754\n#endif' \
-              drivers/kernelsu/supercall/dispatch.c
+          if [ "${{ inputs.ksu_type }}" != "RSKSU" ]; then
+            if grep -q "KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c 2>/dev/null; then
+              grep -q "#define KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c || \
+                sed -i '1i\#ifndef KERNEL_SU_VERSION\n#define KERNEL_SU_VERSION 40754\n#endif' \
+                drivers/kernelsu/supercall/dispatch.c
+            fi
+          else
+            echo "Skipping KERNEL_SU_VERSION fallback for ReSukiSU; ReSukiSU provides it through its own headers"
           fi
 
           if [ -f drivers/kernelsu/runtime/ksud.c ]; then
@@ -1552,16 +1556,18 @@ runs:
         #   undefined symbol: fake_status
         #   undefined symbol: initialize_fake_status
         #
-        # The failing hook is usually injected into security/selinux/selinuxfs.c
-        # as my_sel_open_handle_status().
+        # SUSFS v2.1.0 expects:
+        #   struct page *fake_status;
+        #
+        # Do NOT define fake_status as char[].
         #
 
         echo "Checking ReSukiSU/SUSFS SELinux fake status symbols..."
 
-        SELINUXFS_C="security/selinux/selinuxfs.c"
+        FAKE_STATUS_TARGET="$(grep -Rsl 'my_sel_open_handle_status' . --include='*.c' | head -n 1 || true)"
 
-        if [ -f "$SELINUXFS_C" ] && grep -q 'my_sel_open_handle_status' "$SELINUXFS_C"; then
-          echo "Found my_sel_open_handle_status in $SELINUXFS_C"
+        if [ -n "$FAKE_STATUS_TARGET" ]; then
+          echo "Found my_sel_open_handle_status in: $FAKE_STATUS_TARGET"
 
           echo "Current fake-status references/definitions:"
           grep -Rnw . \
@@ -1572,78 +1578,82 @@ runs:
             -e 'my_sel_open_handle_status' \
             --include='*.c' --include='*.h' || true
 
-          # Remove extern declarations from selinuxfs.c that may point to missing,
-          # static, or LTO-hidden symbols.
           sed -i \
             -e '/extern .*fake_status_initialize_key/d' \
             -e '/extern .*ksu_selinux_hide_enabled/d' \
             -e '/extern .*fake_status/d' \
             -e '/extern .*initialize_fake_status/d' \
-            "$SELINUXFS_C"
+            "$FAKE_STATUS_TARGET"
 
-          # Make sure PAGE_SIZE, bool, memset, and static-key definitions are available.
-          grep -q '#include <linux/jump_label.h>' "$SELINUXFS_C" || \
-            sed -i '/#include <linux\/uaccess.h>/a #include <linux/jump_label.h>' "$SELINUXFS_C" || true
+          grep -q '#include <linux/jump_label.h>' "$FAKE_STATUS_TARGET" || \
+            sed -i '1i#include <linux/jump_label.h>' "$FAKE_STATUS_TARGET"
 
-          grep -q '#include <linux/mm.h>' "$SELINUXFS_C" || \
-            sed -i '/#include <linux\/jump_label.h>/a #include <linux/mm.h>' "$SELINUXFS_C" || true
+          grep -q '#include <linux/mm.h>' "$FAKE_STATUS_TARGET" || \
+            sed -i '1i#include <linux/mm.h>' "$FAKE_STATUS_TARGET"
 
-          grep -q '#include <linux/string.h>' "$SELINUXFS_C" || \
-            sed -i '/#include <linux\/mm.h>/a #include <linux/string.h>' "$SELINUXFS_C" || true
+          grep -q '#include <linux/gfp.h>' "$FAKE_STATUS_TARGET" || \
+            sed -i '1i#include <linux/gfp.h>' "$FAKE_STATUS_TARGET"
 
-          grep -q '#include <linux/types.h>' "$SELINUXFS_C" || \
-            sed -i '/#include <linux\/string.h>/a #include <linux/types.h>' "$SELINUXFS_C" || true
+          grep -q '#include <linux/highmem.h>' "$FAKE_STATUS_TARGET" || \
+            sed -i '1i#include <linux/highmem.h>' "$FAKE_STATUS_TARGET"
 
-          # Inject local fallback definitions into the same translation unit that
-          # contains my_sel_open_handle_status(). This avoids LTO symbol visibility issues.
-          if ! grep -q 'DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key)' "$SELINUXFS_C"; then
-            echo "Injecting fake_status_initialize_key into $SELINUXFS_C"
+          grep -q '#include <linux/string.h>' "$FAKE_STATUS_TARGET" || \
+            sed -i '1i#include <linux/string.h>' "$FAKE_STATUS_TARGET"
 
-            sed -i '/#include <linux\/types.h>/a\
-          DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);' "$SELINUXFS_C"
+          grep -q '#include <linux/types.h>' "$FAKE_STATUS_TARGET" || \
+            sed -i '1i#include <linux/types.h>' "$FAKE_STATUS_TARGET"
+
+          if ! grep -Eq '^[[:space:]]*DEFINE_STATIC_KEY_(FALSE|TRUE)\(fake_status_initialize_key\)' "$FAKE_STATUS_TARGET"; then
+            echo "Injecting fake_status_initialize_key into $FAKE_STATUS_TARGET"
+
+            sed -i '/#include <linux\/jump_label.h>/a\
+          DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);' "$FAKE_STATUS_TARGET"
           else
-            echo "fake_status_initialize_key already defined in $SELINUXFS_C"
+            echo "fake_status_initialize_key already defined in $FAKE_STATUS_TARGET"
           fi
 
-          if ! grep -q '^bool ksu_selinux_hide_enabled' "$SELINUXFS_C"; then
-            echo "Injecting ksu_selinux_hide_enabled into $SELINUXFS_C"
+          if ! grep -Eq '^[[:space:]]*bool[[:space:]]+ksu_selinux_hide_enabled' "$FAKE_STATUS_TARGET"; then
+            echo "Injecting ksu_selinux_hide_enabled into $FAKE_STATUS_TARGET"
 
             sed -i '/DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);/a\
-          bool ksu_selinux_hide_enabled = false;' "$SELINUXFS_C"
+          bool ksu_selinux_hide_enabled __read_mostly = false;' "$FAKE_STATUS_TARGET"
           else
-            echo "ksu_selinux_hide_enabled already defined in $SELINUXFS_C"
+            echo "ksu_selinux_hide_enabled already defined in $FAKE_STATUS_TARGET"
           fi
 
-          if ! grep -q '^char fake_status\[' "$SELINUXFS_C"; then
-            echo "Injecting fake_status buffer into $SELINUXFS_C"
+          if ! grep -Eq '^[[:space:]]*struct[[:space:]]+page[[:space:]]+\*fake_status' "$FAKE_STATUS_TARGET"; then
+            echo "Injecting struct page *fake_status into $FAKE_STATUS_TARGET"
 
-            sed -i '/bool ksu_selinux_hide_enabled = false;/a\
-          char fake_status[PAGE_SIZE];' "$SELINUXFS_C"
+            sed -i '/bool ksu_selinux_hide_enabled __read_mostly = false;/a\
+          struct page *fake_status;' "$FAKE_STATUS_TARGET"
           else
-            echo "fake_status already defined in $SELINUXFS_C"
+            echo "fake_status already defined in $FAKE_STATUS_TARGET"
           fi
 
-          if ! grep -q '^void initialize_fake_status(void)' "$SELINUXFS_C"; then
-            echo "Injecting initialize_fake_status() into $SELINUXFS_C"
+          if ! grep -Eq '^[[:space:]]*void[[:space:]]+initialize_fake_status[[:space:]]*\(void\)' "$FAKE_STATUS_TARGET"; then
+            echo "Injecting initialize_fake_status() into $FAKE_STATUS_TARGET"
 
-            sed -i '/char fake_status\[PAGE_SIZE\];/a\
-          void initialize_fake_status(void)\
-          {\
-          	memset(fake_status, 0, sizeof(fake_status));\
-          }' "$SELINUXFS_C"
+            sed -i '/struct page \*fake_status;/a\
+            void initialize_fake_status(void)\
+            {\
+            	if (fake_status)\
+            		return;\
+            \
+            	fake_status = alloc_page(GFP_KERNEL | __GFP_ZERO);\
+            }' "$FAKE_STATUS_TARGET"
           else
-            echo "initialize_fake_status already defined in $SELINUXFS_C"
+            echo "initialize_fake_status already defined in $FAKE_STATUS_TARGET"
           fi
 
           echo "SELinux fake-status symbol state after fix:"
-          grep -Rnw "$SELINUXFS_C" \
+          grep -Rnw "$FAKE_STATUS_TARGET" \
             -e 'fake_status_initialize_key' \
             -e 'ksu_selinux_hide_enabled' \
             -e 'fake_status' \
             -e 'initialize_fake_status' \
             -e 'my_sel_open_handle_status' || true
         else
-          echo "my_sel_open_handle_status not found in $SELINUXFS_C, skipping fake-status fix"
+          echo "my_sel_open_handle_status not found, skipping fake-status fix"
         fi
 
         echo "✅ SUSFS patches applied"
