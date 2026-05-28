@@ -1187,335 +1187,292 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::Apply SUSFS patches"
-    
+
         cd "$KERNEL_PLATFORM_FOLDER"
-    
+
         echo "Applying SUSFS patches..."
-    
+
         cp "$SUSFS_FOLDER/kernel_patches/fs/"* "$COMMON_KERNEL_FOLDER/fs/"
         cp "$SUSFS_FOLDER/kernel_patches/include/linux/"* "$COMMON_KERNEL_FOLDER/include/linux/"
-    
+
         susfs_version="$(grep '#define SUSFS_VERSION' "$COMMON_KERNEL_FOLDER/include/linux/susfs.h" | awk -F'"' '{print $2}')"
-    
+
         echo "SUSVER=$susfs_version" >> "$GITHUB_ENV"
         echo "$susfs_version" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
-    
+
         echo "SusFS Version: $susfs_version"
-    
-        version_lte() {
-          [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$1" ]
-        }
-    
-        if version_lte "${susfs_version:1}" "1.5.12"; then
-          echo "NEED_HOOKS=true" >> "$GITHUB_ENV"
-        else
-          echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
+
+        if [ "$susfs_version" != "v2.1.0" ]; then
+          echo "::error::This workflow step only supports SUSFS v2.1.0. Detected: $susfs_version"
+          exit 1
         fi
-    
-        case "$susfs_version" in
-          "v1.5.8")
-            if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
-              patch -p1 --forward --fuzz=3 < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_apk_sign.c.patch"
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_core_hook.c.patch"
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_selinux.c.patch"
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_ksud.c.patch"
-            elif [ "${{ inputs.ksu_type }}" = "RSKSU" ]; then
-              echo "ReSukiSU works with built-in SUSFS integration"
-            elif [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-              cd "$KSU_FOLDER"
-              patch -p1 --forward --fuzz=3 < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-            else
-              cd "$KSU_FOLDER"
-              patch -p1 --forward --fuzz=3 < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-            fi
-            ;;
-    
-          "v1.5.9"|"v1.5.10"|"v1.5.11"|"v1.5.12")
-            if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
-              cd "$KSUN_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-    
-              for file in $(find ./kernel -maxdepth 2 -name "*.rej" -printf "%f\n" | cut -d'.' -f1); do
-                echo "Patching file: $file.c with fix_$file.c.patch"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.c.patch"
-              done
-    
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_kernel_compat.c.patch"
-            elif [ "${{ inputs.ksu_type }}" = "RSKSU" ]; then
-              echo "ReSukiSU works with built-in SUSFS integration"
-            elif [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-            else
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-            fi
-            ;;
-    
-          "v2.0.0")
-            if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
-              cd "$KSUN_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-    
-              for file in $(find ./kernel -maxdepth 2 -name "*.rej" -exec basename {} .rej \;); do
-                echo "Patching file: $file with fix_$file.patch"
+
+        echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
+
+        # ============================================================
+        # Apply SUSFS integration patch for KernelSU variant
+        # ============================================================
+
+        case "${{ inputs.ksu_type }}" in
+          "KSUN")
+            echo "Applying SUSFS v2.1.0 integration for KernelSU Next"
+
+            cd "$KSUN_FOLDER"
+
+            patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
+
+            for file in $(find ./kernel -maxdepth 2 -name "*.rej" -exec basename {} .rej \;); do
+              echo "Patching rejected file: $file with fix_$file.patch"
+
+              if [ -f "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.patch" ]; then
                 patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.patch"
-              done
-    
-              echo "Patching Hook Mode!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/overwrite_hook_mode.patch"
-    
-              echo "Patching KSU_TOOLKIT Support for SusFS kernel!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/ksu_toolkit.patch"
-    
-              echo "Patching Multi-manager Support for SusFS kernel!"
+              else
+                echo "::warning::Missing fix patch for rejected file: fix_$file.patch"
+              fi
+            done
+
+            echo "Patching Hook Mode"
+            patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/overwrite_hook_mode.patch"
+
+            echo "Patching KSU_TOOLKIT support"
+            patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/ksu_toolkit.patch"
+
+            if [ "${KSUVER:-0}" -le 33095 ]; then
+              echo "Patching Multi-manager support"
               patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_manager.patch"
-    
-              if [ "$KSUVER" -ge 33068 ] && [ "$KSUVER" -lt 33070 ]; then
-                echo "Patching Multi-manager sepolicy Support for SusFS kernel!"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_sepolicy_fix.patch"
-              fi
-            elif [ "${{ inputs.ksu_type }}" = "RSKSU" ]; then
-              echo "ReSukiSU works with built-in SUSFS integration"
-            elif [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-            else
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
+            fi
+
+            if [ "${KSUVER:-0}" -ge 33068 ] && [ "${KSUVER:-0}" -lt 33070 ]; then
+              echo "Patching Multi-manager sepolicy support"
+              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_sepolicy_fix.patch"
             fi
             ;;
-    
-          "v2.1.0")
-            if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
-              cd "$KSUN_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-    
-              for file in $(find ./kernel -maxdepth 2 -name "*.rej" -exec basename {} .rej \;); do
-                echo "Patching file: $file with fix_$file.patch"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.patch"
-              done
-    
-              echo "Patching Hook Mode!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/overwrite_hook_mode.patch"
-    
-              echo "Patching KSU_TOOLKIT Support for SusFS kernel!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/ksu_toolkit.patch"
-    
-              if [ "$KSUVER" -le 33095 ]; then
-                echo "Patching Multi-manager Support for SusFS kernel!"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_manager.patch"
-              fi
-    
-              if [ "$KSUVER" -ge 33068 ] && [ "$KSUVER" -lt 33070 ]; then
-                echo "Patching Multi-manager sepolicy Support for SusFS kernel!"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_sepolicy_fix.patch"
-              fi
-            elif [ "${{ inputs.ksu_type }}" = "RSKSU" ]; then
-              echo "ReSukiSU works with built-in SUSFS integration"
-            elif [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-            else
-              cd "$KSU_FOLDER"
-              patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-            fi
+
+          "RSKSU")
+            echo "ReSukiSU detected"
+            echo "ReSukiSU uses built-in SUSFS integration; skipping 10_enable_susfs_for_ksu.patch"
             ;;
-    
+
+          "SUKISU")
+            echo "Applying SUSFS v2.1.0 integration for SukiSU Ultra"
+
+            cd "$KSU_FOLDER"
+
+            patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
+            ;;
+
+          "KSU")
+            echo "Applying SUSFS v2.1.0 integration for KernelSU"
+
+            cd "$KSU_FOLDER"
+
+            patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
+            ;;
+
           *)
-            echo "::error::Unsupported SUSFS version: $susfs_version"
+            echo "::error::Unsupported ksu_type: ${{ inputs.ksu_type }}"
             exit 1
             ;;
         esac
-    
+
         cd "$COMMON_KERNEL_FOLDER"
-    
-        # ===== KSUN / SukiSU Ultra compatibility fixes =====
-        if [ "${{ inputs.ksu_type }}" = "KSUN" ] || [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-          echo "Applying KSUN / SukiSU compatibility fixes..."
-    
+
+        # ============================================================
+        # KSUN / ReSukiSU / SukiSU Ultra compatibility fixes
+        # ============================================================
+
+        if [ "${{ inputs.ksu_type }}" = "KSUN" ] || [ "${{ inputs.ksu_type }}" = "SUKISU" ] || [ "${{ inputs.ksu_type }}" = "RSKSU" ]; then
+          echo "Applying KSUN / ReSukiSU / SukiSU compatibility fixes..."
+
           sed -i '/DEFINE_MEMBER(netlink_kernel_cfg, cb_mutex)/d' \
             drivers/kernelsu/kpm/super_access.c 2>/dev/null || true
-    
+
           if [ -f drivers/kernelsu/hook/lsm_hook.c ]; then
             sed -i \
               's/security_add_hooks(ksu_hooks, ARRAY_SIZE(ksu_hooks), "ksu");/security_add_hooks(ksu_hooks, ARRAY_SIZE(ksu_hooks), \&ksu_lsmid);/' \
               drivers/kernelsu/hook/lsm_hook.c || true
-    
+
             grep -q "static struct lsm_id ksu_lsmid" drivers/kernelsu/hook/lsm_hook.c || \
               sed -i '/security_add_hooks.*ksu_lsmid/i\    static struct lsm_id ksu_lsmid = { .name = "ksu", .id = LSM_ID_UNDEF };' \
               drivers/kernelsu/hook/lsm_hook.c || true
           fi
-    
+
           sed -i 's/is_zygote_normal_app_uid(new_uid)/is_appuid(new_uid)/' \
             drivers/kernelsu/hook/setuid_hook.c 2>/dev/null || true
-    
+
           sed -i 's/ksu_handle_extra_susfs_work();/\/\/ ksu_handle_extra_susfs_work();/' \
             drivers/kernelsu/hook/setuid_hook.c 2>/dev/null || true
-    
+
           if [ -f drivers/kernelsu/core/init.c ]; then
             grep -q "feature/sucompat.h" drivers/kernelsu/core/init.c 2>/dev/null || \
               sed -i '/#include "ksu.h"/a #include "feature/sucompat.h"' \
               drivers/kernelsu/core/init.c 2>/dev/null || true
-    
+
             grep -q "hook/setuid_hook.h" drivers/kernelsu/core/init.c 2>/dev/null || \
               sed -i '/#include "ksu.h"/a #include "hook/setuid_hook.h"' \
               drivers/kernelsu/core/init.c 2>/dev/null || true
           fi
-    
-          if [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-            echo "Applying SukiSU Ultra-specific fixes..."
-    
-            mkdir -p drivers/kernelsu/kpm/uapi include/uapi
-    
-            cp "$KERNEL_PLATFORM_FOLDER/KernelSU/uapi/"*.h \
-              drivers/kernelsu/kpm/uapi/ 2>/dev/null || true
-    
-            cp "$KERNEL_PLATFORM_FOLDER/KernelSU/uapi/"*.h \
-              include/uapi/ 2>/dev/null || true
-    
-            KLOG_SRC="$(find "$KERNEL_PLATFORM_FOLDER/KernelSU" -name "klog.h" -type f 2>/dev/null | head -n 1 || true)"
-    
-            if [ -n "$KLOG_SRC" ]; then
-              for dest in \
-                drivers/kernelsu \
-                drivers/kernelsu/core \
-                drivers/kernelsu/feature \
-                drivers/kernelsu/hook \
-                drivers/kernelsu/selinux \
-                drivers/kernelsu/sulog; do
-                mkdir -p "$dest"
-                cp "$KLOG_SRC" "$dest/" 2>/dev/null || true
-              done
-            fi
-    
-            if [ -f drivers/kernelsu/Kbuild ]; then
-              grep -q 'srctree)/$(src)' drivers/kernelsu/Kbuild || \
-                sed -i '1i\ccflags-y += -I$(srctree)/$(src)' drivers/kernelsu/Kbuild
-    
-              grep -q "kpm/uapi" drivers/kernelsu/Kbuild || \
-                sed -i '/^obj-\$(CONFIG_KPM) += kpm\/compact.o/i\ccflags-\$(CONFIG_KPM) += -I$(srctree)/$(src)/kpm/uapi -I$(srctree)/include/uapi' \
-                drivers/kernelsu/Kbuild
-            fi
-    
-            ARCH_H="$(find "$KERNEL_PLATFORM_FOLDER/KernelSU" -name "arch.h" -type f 2>/dev/null | head -n 1 || true)"
-    
-            if [ -n "$ARCH_H" ]; then
-              for dest in feature hook infra selinux supercall core runtime; do
-                if [ -d "drivers/kernelsu/$dest" ]; then
-                  cp "$ARCH_H" "drivers/kernelsu/$dest/" 2>/dev/null || true
-                fi
-              done
-            fi
-    
-            KSU_CRED_DEF='extern struct cred *ksu_cred;'
-    
-            while IFS= read -r f; do
-              grep -qF "$KSU_CRED_DEF" "$f" || sed -i "1i\\$KSU_CRED_DEF" "$f"
-            done < <(grep -rl "ksu_cred" drivers/kernelsu/ --include="*.c" 2>/dev/null || true)
-    
-            if grep -q "allow_shell" drivers/kernelsu/policy/allowlist.c 2>/dev/null; then
-              if ! grep -q "extern bool allow_shell" drivers/kernelsu/policy/allowlist.c; then
-                sed -i '1i\#include <linux/types.h>\nextern bool allow_shell;' \
-                  drivers/kernelsu/policy/allowlist.c
+
+          KLOG_SRC="$(find "$KERNEL_PLATFORM_FOLDER/KernelSU" "$KERNEL_PLATFORM_FOLDER/KernelSU-Next" -name "klog.h" -type f 2>/dev/null | head -n 1 || true)"
+
+          if [ -n "$KLOG_SRC" ]; then
+            echo "Copying klog.h compatibility header from: $KLOG_SRC"
+
+            for dest in \
+              drivers/kernelsu \
+              drivers/kernelsu/core \
+              drivers/kernelsu/feature \
+              drivers/kernelsu/hook \
+              drivers/kernelsu/selinux \
+              drivers/kernelsu/sulog; do
+              mkdir -p "$dest"
+              cp "$KLOG_SRC" "$dest/" 2>/dev/null || true
+            done
+          fi
+
+          ARCH_H="$(find "$KERNEL_PLATFORM_FOLDER/KernelSU" "$KERNEL_PLATFORM_FOLDER/KernelSU-Next" -name "arch.h" -type f 2>/dev/null | head -n 1 || true)"
+
+          if [ -n "$ARCH_H" ]; then
+            echo "Copying arch.h compatibility header from: $ARCH_H"
+
+            for dest in feature hook infra selinux supercall core runtime; do
+              if [ -d "drivers/kernelsu/$dest" ]; then
+                cp "$ARCH_H" "drivers/kernelsu/$dest/" 2>/dev/null || true
               fi
-            fi
-    
-            if grep -q "KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c 2>/dev/null; then
-              grep -q "#define KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c || \
-                sed -i '1i\#ifndef KERNEL_SU_VERSION\n#define KERNEL_SU_VERSION 40754\n#endif' \
-                drivers/kernelsu/supercall/dispatch.c
-            fi
-    
-            if [ -f drivers/kernelsu/runtime/ksud.c ]; then
-              grep -q "ksu_init_rc_hook_key_false" drivers/kernelsu/runtime/ksud.c || \
-                sed -i '1i\#include <linux/jump_label.h>\nDEFINE_STATIC_KEY_FALSE(ksu_init_rc_hook_key_false);\nDEFINE_STATIC_KEY_FALSE(ksu_input_hook_key_false);' \
-                drivers/kernelsu/runtime/ksud.c
-            fi
-    
-            sed -i \
-              's/extern struct static_key_true ksu_is_init_rc_hook_enabled;/DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);/' \
-              fs/stat.c 2>/dev/null || true
-    
-            sed -i \
-              's/extern struct static_key_true ksu_is_input_hook_enabled;/DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);/' \
-              drivers/input/input.c 2>/dev/null || true
-    
-            if [ -f fs/read_write.c ]; then
-              grep -q "DEFINE_STATIC_KEY_FALSE.*ksu_is_init_rc_hook_enabled" fs/read_write.c || \
-                sed -i \
-                  's/DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);/extern struct static_key_true ksu_is_init_rc_hook_enabled;/' \
-                  fs/read_write.c 2>/dev/null || true
+            done
+          fi
+
+          KSU_CRED_DEF='extern struct cred *ksu_cred;'
+
+          while IFS= read -r f; do
+            grep -qF "$KSU_CRED_DEF" "$f" || sed -i "1i\\$KSU_CRED_DEF" "$f"
+          done < <(grep -rl "ksu_cred" drivers/kernelsu/ --include="*.c" 2>/dev/null || true)
+
+          if grep -q "allow_shell" drivers/kernelsu/policy/allowlist.c 2>/dev/null; then
+            if ! grep -q "extern bool allow_shell" drivers/kernelsu/policy/allowlist.c; then
+              sed -i '1i\#include <linux/types.h>\nextern bool allow_shell;' \
+                drivers/kernelsu/policy/allowlist.c
             fi
           fi
+
+          if grep -q "KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c 2>/dev/null; then
+            grep -q "#define KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c || \
+              sed -i '1i\#ifndef KERNEL_SU_VERSION\n#define KERNEL_SU_VERSION 40754\n#endif' \
+              drivers/kernelsu/supercall/dispatch.c
+          fi
+
+          if [ -f drivers/kernelsu/runtime/ksud.c ]; then
+            grep -q "ksu_init_rc_hook_key_false" drivers/kernelsu/runtime/ksud.c || \
+              sed -i '1i\#include <linux/jump_label.h>\nDEFINE_STATIC_KEY_FALSE(ksu_init_rc_hook_key_false);\nDEFINE_STATIC_KEY_FALSE(ksu_input_hook_key_false);' \
+              drivers/kernelsu/runtime/ksud.c
+          fi
+
+          sed -i \
+            's/extern struct static_key_true ksu_is_init_rc_hook_enabled;/DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);/' \
+            fs/stat.c 2>/dev/null || true
+
+          sed -i \
+            's/extern struct static_key_true ksu_is_input_hook_enabled;/DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);/' \
+            drivers/input/input.c 2>/dev/null || true
+
+          if [ -f fs/read_write.c ]; then
+            grep -q "DEFINE_STATIC_KEY_FALSE.*ksu_is_init_rc_hook_enabled" fs/read_write.c || \
+              sed -i \
+                's/DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);/extern struct static_key_true ksu_is_init_rc_hook_enabled;/' \
+                fs/read_write.c 2>/dev/null || true
+          fi
+
+          # SukiSU / ReSukiSU sulog USER_ARG_NULL argument-type compatibility fix.
+          SULOG_EVENT="./drivers/kernelsu/sulog/event.c"
+
+          if [ -f "$SULOG_EVENT" ]; then
+            if grep -q 'struct user_arg_ptr \*argv_user' "$SULOG_EVENT" &&
+               grep -q ', USER_ARG_NULL, gfp)' "$SULOG_EVENT"; then
+              sed -i 's|, USER_ARG_NULL, gfp)|, \&USER_ARG_NULL, gfp)|g' "$SULOG_EVENT"
+              echo "Fixed sulog USER_ARG_NULL argument type"
+            else
+              echo "sulog USER_ARG_NULL argument type does not need fixing"
+            fi
+          else
+            echo "$SULOG_EVENT not found, skipping sulog USER_ARG_NULL fix"
+          fi
         fi
-        # ===== End KSUN / SukiSU Ultra compatibility fixes =====
-    
+
+        # ============================================================
+        # Android/kernel-version pre-fixes for SUSFS common kernel patch
+        # ============================================================
+
         if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
           if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
             sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace\/hooks\/fs.h>' ./fs/namespace.c
           fi
         fi
-    
+
         fake_patched=0
-    
+
         if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
           if ! grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
-            echo "nr_subpages Line not found. Fake Patching!"
-            sed -i -e '/int ret = 0, copied = 0;/a \\tunsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;' -e '/int ret = 0, copied = 0;/a \\tpagemap_entry_t \*res = NULL;' ./fs/proc/task_mmu.c
+            echo "nr_subpages line not found. Fake patching for SUSFS context..."
+            sed -i \
+              -e '/int ret = 0, copied = 0;/a \\tunsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;' \
+              -e '/int ret = 0, copied = 0;/a \\tpagemap_entry_t \*res = NULL;' \
+              ./fs/proc/task_mmu.c
             fake_patched=1
           fi
-    
+
           if ! grep -qxF '#include <linux/dma-buf.h>' ./fs/proc/base.c; then
-            echo "#include <linux/dma-buf.h> Line not found. Adding missing header"
+            echo "Adding missing <linux/dma-buf.h> header"
             sed -i '/#include <linux\/cpufreq_times.h>/a #include <linux\/dma-buf.h>' ./fs/proc/base.c
           fi
         fi
-    
+
         if [ "${{ env.ANDROID_VER }}" = "android12" ] && [ "${{ env.KERNEL_VER }}" = "5.10" ]; then
           if ! grep -qxF $'\tif (!vma_pages(vma))' ./fs/proc/task_mmu.c; then
-            echo "vma_pages Line not found. Fake Patching!"
+            echo "vma_pages line not found. Fake patching for SUSFS context..."
             fake_patched=1
           fi
         fi
-    
+
         if [ "${{ env.ANDROID_VER }}" = "android13" ] && [ "${{ env.KERNEL_VER }}" = "5.15" ]; then
           if ! grep -qxF $'\tif (!vma_pages(vma))' ./fs/proc/task_mmu.c; then
-            echo "vma_pages Line not found. Fake Patching!"
+            echo "vma_pages line not found. Fake patching for SUSFS context..."
             fake_patched=1
           fi
         fi
-    
+
         if [ "${{ env.ANDROID_VER }}" = "android14" ] && [ "${{ env.KERNEL_VER }}" = "6.1" ]; then
           if ! grep -qxF $'\tif (!vma_pages(vma))' ./fs/proc/task_mmu.c; then
-            echo "vma_pages Line not found. Fake Patching!"
+            echo "vma_pages line not found. Fake patching for SUSFS context..."
             fake_patched=1
           fi
-    
+
           if ! grep -qxF '#include <linux/dma-buf.h>' ./fs/proc/base.c; then
-            echo "#include <linux/dma-buf.h> Line not found. Adding missing header"
+            echo "Adding missing <linux/dma-buf.h> header"
             sed -i '/#include <linux\/cpufreq_times.h>/a #include <linux\/dma-buf.h>' ./fs/proc/base.c
           fi
         fi
-    
+
+        # ============================================================
+        # Apply SUSFS v2.1.0 common kernel patch
+        # ============================================================
+
         echo "Applying SUSFS kernel patch..."
-    
+
         SUSFS_PATCH="$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
-    
+
         if [ ! -f "$SUSFS_PATCH" ]; then
           echo "::error::SUSFS patch not found: $SUSFS_PATCH"
           exit 1
         fi
-    
+
         if ! patch -p1 --forward < "$SUSFS_PATCH"; then
           echo "Patch reported errors. Checking for known mm/memory.c Hunk #1 context mismatch..."
-    
+
           handled_rejects=0
-    
+
           if [ -f mm/memory.c.rej ] && grep -q 'CONFIG_KSU_SUSFS_SUS_MAP' mm/memory.c.rej; then
             echo "Manually injecting SUSFS headers into mm/memory.c..."
-    
+
             if grep -q '#include <linux/susfs_def.h>' mm/memory.c; then
               echo "SUSFS header already present in mm/memory.c"
             elif grep -q '#include <linux/vmalloc.h>' mm/memory.c; then
@@ -1529,17 +1486,17 @@ runs:
               cat mm/memory.c.rej
               exit 1
             fi
-    
+
             rm -f mm/memory.c.rej
             handled_rejects=1
           fi
-    
+
           if [ -n "$(find . -name "*.rej" -print -quit)" ]; then
             echo "::error::SUSFS patch failed. Dumping all remaining .rej files:"
             find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
             exit 1
           fi
-    
+
           if [ "$handled_rejects" = 1 ]; then
             echo "Patch applied successfully with manual fallback for known mm/memory.c reject."
           else
@@ -1547,41 +1504,156 @@ runs:
             exit 1
           fi
         fi
-    
+
+        # ============================================================
+        # Revert fake context patches where needed
+        # ============================================================
+
         if [ "$fake_patched" = 1 ]; then
           if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
             if grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
-              echo "nr_subpages Line found. Revert Fake Patching!"
-              sed -i -e '/unsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;/d' -e '/pagemap_entry_t \*res = NULL;/d' ./fs/proc/task_mmu.c
+              echo "nr_subpages line found. Reverting fake patch..."
+              sed -i \
+                -e '/unsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;/d' \
+                -e '/pagemap_entry_t \*res = NULL;/d' \
+                ./fs/proc/task_mmu.c
             fi
           fi
-    
+
           if [ "${{ env.ANDROID_VER }}" = "android12" ] && [ "${{ env.KERNEL_VER }}" = "5.10" ]; then
             if grep -qxF $'\t\t\tgoto show_pad;' ./fs/proc/task_mmu.c; then
-              echo "vma_pages Line found. Revert Fake Patching!"
+              echo "vma_pages line found. Reverting fake patch..."
               sed -i -e 's/goto show_pad;/return 0;/' ./fs/proc/task_mmu.c
             fi
           fi
-    
+
           if [ "${{ env.ANDROID_VER }}" = "android13" ] && [ "${{ env.KERNEL_VER }}" = "5.15" ]; then
             if grep -qxF $'\t\t\tgoto show_pad;' ./fs/proc/task_mmu.c; then
-              echo "vma_pages Line found. Revert Fake Patching!"
+              echo "vma_pages line found. Reverting fake patch..."
               sed -i -e 's/goto show_pad;/return 0;/' ./fs/proc/task_mmu.c
             fi
           fi
-    
+
           if [ "${{ env.ANDROID_VER }}" = "android14" ] && [ "${{ env.KERNEL_VER }}" = "6.1" ]; then
             if grep -qxF $'\t\t\tgoto show_pad;' ./fs/proc/task_mmu.c; then
-              echo "vma_pages Line found. Revert Fake Patching!"
+              echo "vma_pages line found. Reverting fake patch..."
               sed -i -e 's/goto show_pad;/return 0;/' ./fs/proc/task_mmu.c
             fi
           fi
         fi
-    
+
+        # ============================================================
+        # ReSukiSU/SUSFS SELinux fake status unresolved-symbol fix
+        # ============================================================
+        #
+        # Fixes link errors:
+        #   undefined symbol: fake_status_initialize_key
+        #   undefined symbol: ksu_selinux_hide_enabled
+        #   undefined symbol: fake_status
+        #   undefined symbol: initialize_fake_status
+        #
+        # The failing hook is usually injected into security/selinux/selinuxfs.c
+        # as my_sel_open_handle_status().
+        #
+
+        echo "Checking ReSukiSU/SUSFS SELinux fake status symbols..."
+
+        SELINUXFS_C="security/selinux/selinuxfs.c"
+
+        if [ -f "$SELINUXFS_C" ] && grep -q 'my_sel_open_handle_status' "$SELINUXFS_C"; then
+          echo "Found my_sel_open_handle_status in $SELINUXFS_C"
+
+          echo "Current fake-status references/definitions:"
+          grep -Rnw . \
+            -e 'fake_status_initialize_key' \
+            -e 'ksu_selinux_hide_enabled' \
+            -e 'fake_status' \
+            -e 'initialize_fake_status' \
+            -e 'my_sel_open_handle_status' \
+            --include='*.c' --include='*.h' || true
+
+          # Remove extern declarations from selinuxfs.c that may point to missing,
+          # static, or LTO-hidden symbols.
+          sed -i \
+            -e '/extern .*fake_status_initialize_key/d' \
+            -e '/extern .*ksu_selinux_hide_enabled/d' \
+            -e '/extern .*fake_status/d' \
+            -e '/extern .*initialize_fake_status/d' \
+            "$SELINUXFS_C"
+
+          # Make sure PAGE_SIZE, bool, memset, and static-key definitions are available.
+          grep -q '#include <linux/jump_label.h>' "$SELINUXFS_C" || \
+            sed -i '/#include <linux\/uaccess.h>/a #include <linux/jump_label.h>' "$SELINUXFS_C" || true
+
+          grep -q '#include <linux/mm.h>' "$SELINUXFS_C" || \
+            sed -i '/#include <linux\/jump_label.h>/a #include <linux/mm.h>' "$SELINUXFS_C" || true
+
+          grep -q '#include <linux/string.h>' "$SELINUXFS_C" || \
+            sed -i '/#include <linux\/mm.h>/a #include <linux/string.h>' "$SELINUXFS_C" || true
+
+          grep -q '#include <linux/types.h>' "$SELINUXFS_C" || \
+            sed -i '/#include <linux\/string.h>/a #include <linux/types.h>' "$SELINUXFS_C" || true
+
+          # Inject local fallback definitions into the same translation unit that
+          # contains my_sel_open_handle_status(). This avoids LTO symbol visibility issues.
+          if ! grep -q 'DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key)' "$SELINUXFS_C"; then
+            echo "Injecting fake_status_initialize_key into $SELINUXFS_C"
+
+            sed -i '/#include <linux\/types.h>/a\
+          DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);' "$SELINUXFS_C"
+          else
+            echo "fake_status_initialize_key already defined in $SELINUXFS_C"
+          fi
+
+          if ! grep -q '^bool ksu_selinux_hide_enabled' "$SELINUXFS_C"; then
+            echo "Injecting ksu_selinux_hide_enabled into $SELINUXFS_C"
+
+            sed -i '/DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);/a\
+          bool ksu_selinux_hide_enabled = false;' "$SELINUXFS_C"
+          else
+            echo "ksu_selinux_hide_enabled already defined in $SELINUXFS_C"
+          fi
+
+          if ! grep -q '^char fake_status\[' "$SELINUXFS_C"; then
+            echo "Injecting fake_status buffer into $SELINUXFS_C"
+
+            sed -i '/bool ksu_selinux_hide_enabled = false;/a\
+          char fake_status[PAGE_SIZE];' "$SELINUXFS_C"
+          else
+            echo "fake_status already defined in $SELINUXFS_C"
+          fi
+
+          if ! grep -q '^void initialize_fake_status(void)' "$SELINUXFS_C"; then
+            echo "Injecting initialize_fake_status() into $SELINUXFS_C"
+
+            sed -i '/char fake_status\[PAGE_SIZE\];/a\
+          void initialize_fake_status(void)\
+          {\
+          	memset(fake_status, 0, sizeof(fake_status));\
+          }' "$SELINUXFS_C"
+          else
+            echo "initialize_fake_status already defined in $SELINUXFS_C"
+          fi
+
+          echo "SELinux fake-status symbol state after fix:"
+          grep -Rnw "$SELINUXFS_C" \
+            -e 'fake_status_initialize_key' \
+            -e 'ksu_selinux_hide_enabled' \
+            -e 'fake_status' \
+            -e 'initialize_fake_status' \
+            -e 'my_sel_open_handle_status' || true
+        else
+          echo "my_sel_open_handle_status not found in $SELINUXFS_C, skipping fake-status fix"
+        fi
+
         echo "✅ SUSFS patches applied"
-    
+
+        # ============================================================
+        # Add SUSFS v2.1.0 kernel configuration
+        # ============================================================
+
         echo "Add SUSFS Configuration Settings"
-    
+
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_KSU_SUSFS=y
         CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
@@ -1601,7 +1673,7 @@ runs:
         CONFIG_KSU_SUSFS_SUS_MAP=y
         CONFIG_KSU_SUSFS_SUS_SU=n
         EOF
-    
+
         echo "::endgroup::"
 
     - name: Add BBG
