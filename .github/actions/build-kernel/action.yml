@@ -1708,6 +1708,197 @@ runs:
 
         echo "::endgroup::"
 
+    - name: Repair ReSukiSU SUSFS SELinux fake-status placement
+      shell: bash
+      if: ${{ env.OP_SUSFS == 'true' && inputs.ksu_type == 'RSKSU' }}
+      run: |
+        set -euo pipefail
+
+        echo "::group::Repair ReSukiSU SUSFS SELinux fake-status placement"
+
+        cd "$COMMON_KERNEL_FOLDER"
+
+        FAKE_STATUS_TARGET="$(grep -Rsl 'my_sel_open_handle_status' . --include='*.c' | head -n 1 || true)"
+
+        if [ -z "$FAKE_STATUS_TARGET" ]; then
+          echo "my_sel_open_handle_status not found, skipping fake-status repair"
+          echo "::endgroup::"
+          exit 0
+        fi
+
+        echo "Found fake-status target: $FAKE_STATUS_TARGET"
+
+        echo
+        echo "== Current fake-status references before repair =="
+        grep -Rnw "$FAKE_STATUS_TARGET" \
+          -e 'fake_status_initialize_key' \
+          -e 'ksu_selinux_hide_enabled' \
+          -e 'fake_status' \
+          -e 'initialize_fake_status' \
+          -e 'my_sel_open_handle_status' || true
+
+        echo
+        echo "== Removing bad fallback injections and extern declarations =="
+
+        sed -i \
+          -e '/extern .*fake_status_initialize_key/d' \
+          -e '/extern .*ksu_selinux_hide_enabled/d' \
+          -e '/extern .*fake_status/d' \
+          -e '/extern .*initialize_fake_status/d' \
+          "$FAKE_STATUS_TARGET"
+
+        sed -i \
+          -e '/\/\* ReSukiSU\/SUSFS fallback fake SELinux status symbols \*\//,/^}$/d' \
+          -e '/DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);/d' \
+          -e '/bool ksu_selinux_hide_enabled __read_mostly = false;/d' \
+          -e '/bool ksu_selinux_hide_enabled = false;/d' \
+          -e '/char fake_status\[PAGE_SIZE\];/d' \
+          -e '/struct page \*fake_status;/d' \
+          "$FAKE_STATUS_TARGET"
+
+        if grep -q '^[[:space:]]*void initialize_fake_status(void)' "$FAKE_STATUS_TARGET"; then
+          sed -i '/^[[:space:]]*void initialize_fake_status(void)/,/^[[:space:]]*}/d' "$FAKE_STATUS_TARGET"
+        fi
+
+        echo
+        echo "== De-duplicating #include lines =="
+
+        awk '
+          /^#include / {
+            if (!seen[$0]++) {
+              print
+            }
+            next
+          }
+
+          {
+            print
+          }
+        ' "$FAKE_STATUS_TARGET" > "${FAKE_STATUS_TARGET}.dedup"
+
+        mv "${FAKE_STATUS_TARGET}.dedup" "$FAKE_STATUS_TARGET"
+
+        echo
+        echo "== Adding required headers once =="
+
+        add_include_once() {
+          local header="$1"
+          local file="$2"
+
+          if grep -qxF "#include <$header>" "$file"; then
+            echo "Header already present: <$header>"
+            return 0
+          fi
+
+          awk -v inc="#include <${header}>" '
+            BEGIN {
+              inserted = 0
+            }
+
+            /^#include / && inserted == 0 {
+              print
+              print inc
+              inserted = 1
+              next
+            }
+
+            {
+              print
+            }
+
+            END {
+              if (inserted == 0) {
+                print inc
+              }
+            }
+          ' "$file" > "${file}.include_tmp"
+
+          mv "${file}.include_tmp" "$file"
+
+          echo "Added header: <$header>"
+        }
+
+        add_include_once "linux/jump_label.h" "$FAKE_STATUS_TARGET"
+        add_include_once "linux/mm.h" "$FAKE_STATUS_TARGET"
+        add_include_once "linux/gfp.h" "$FAKE_STATUS_TARGET"
+        add_include_once "linux/types.h" "$FAKE_STATUS_TARGET"
+        add_include_once "linux/cache.h" "$FAKE_STATUS_TARGET"
+
+        echo
+        echo "== Creating fallback fake-status block =="
+
+        printf '%s\n' \
+          '' \
+          '/* ReSukiSU/SUSFS fallback fake SELinux status symbols */' \
+          'DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);' \
+          'bool ksu_selinux_hide_enabled __read_mostly = false;' \
+          'struct page *fake_status;' \
+          '' \
+          'void initialize_fake_status(void)' \
+          '{' \
+          '	if (fake_status)' \
+          '		return;' \
+          '' \
+          '	fake_status = alloc_page(GFP_KERNEL | __GFP_ZERO);' \
+          '}' \
+          > /tmp/ksu_fake_status_block.txt
+
+        echo
+        echo "== Inserting fallback block after include section =="
+
+        awk '
+          BEGIN {
+            inserted = 0
+            seen_include = 0
+          }
+
+          /^#include / {
+            seen_include = 1
+            print
+            next
+          }
+
+          seen_include == 1 && inserted == 0 {
+            while ((getline line < "/tmp/ksu_fake_status_block.txt") > 0) {
+              print line
+            }
+            close("/tmp/ksu_fake_status_block.txt")
+            inserted = 1
+          }
+
+          {
+            print
+          }
+
+          END {
+            if (inserted == 0) {
+              while ((getline line < "/tmp/ksu_fake_status_block.txt") > 0) {
+                print line
+              }
+              close("/tmp/ksu_fake_status_block.txt")
+            }
+          }
+        ' "$FAKE_STATUS_TARGET" > "${FAKE_STATUS_TARGET}.tmp"
+
+        mv "${FAKE_STATUS_TARGET}.tmp" "$FAKE_STATUS_TARGET"
+
+        echo
+        echo "== Fake-status references after repair =="
+        grep -Rnw "$FAKE_STATUS_TARGET" \
+          -e 'fake_status_initialize_key' \
+          -e 'ksu_selinux_hide_enabled' \
+          -e 'fake_status' \
+          -e 'initialize_fake_status' \
+          -e 'my_sel_open_handle_status' || true
+
+        echo
+        echo "== Top of $FAKE_STATUS_TARGET after repair =="
+        sed -n '1,140p' "$FAKE_STATUS_TARGET"
+
+        echo
+        echo "✅ ReSukiSU SUSFS SELinux fake-status placement repaired"
+        echo "::endgroup::"
+
     - name: Add BBG
       if: ${{ env.OP_BBG == 'true' }}
       shell: bash
