@@ -1872,9 +1872,9 @@ runs:
         grep -nE '^[[:space:]]*(__maybe_static[[:space:]]+)?void[[:space:]]+initialize_fake_status[[:space:]]*\(' "$FAKE_STATUS_TARGET" || true
 
         PLAIN_FALLBACK_COUNT="$(
-          grep -nE '^[[:space:]]*void[[:space:]]+initialize_fake_status[[:space:]]*\([[:space:]]*void[[:space:]]*\)' "$FAKE_STATUS_TARGET" \
-            | wc -l \
-            | tr -d ' '
+          {
+            grep -nE '^[[:space:]]*void[[:space:]]+initialize_fake_status[[:space:]]*\([[:space:]]*void[[:space:]]*\)' "$FAKE_STATUS_TARGET" || true
+          } | wc -l | tr -d ' '
         )"
 
         echo "plain fallback initialize_fake_status(void) count: $PLAIN_FALLBACK_COUNT"
@@ -2303,12 +2303,12 @@ runs:
 
               cat >> "$RESOLVER" << 'EOF'
 
-              /* Fallback for missing symbols (Kernel 5.15) */
-              int __attribute__((weak)) kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *, unsigned long), void *data)
-              {
-                  return 0;
-              }
-              EOF
+                /* Fallback for missing symbols (Kernel 5.15) */
+                int __attribute__((weak)) kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *, unsigned long), void *data)
+                {
+                    return 0;
+                }
+                EOF
 
               echo "✅ Weak kallsyms fallback injected successfully."
             else
