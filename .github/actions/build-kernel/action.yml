@@ -1546,136 +1546,155 @@ runs:
         fi
 
         # ============================================================
-        # ReSukiSU/SUSFS SELinux fake status unresolved-symbol fix
+        # SUSFS fake-status fallback for non-ReSukiSU variants only
         # ============================================================
         #
-        # Fixes link errors:
-        #   undefined symbol: fake_status_initialize_key
-        #   undefined symbol: ksu_selinux_hide_enabled
-        #   undefined symbol: fake_status
-        #   undefined symbol: initialize_fake_status
+        # ReSukiSU already provides native fake-status symbols in:
+        #   drivers/kernelsu/feature/selinux_hide.c
         #
-        # SUSFS v2.1.0 expects:
-        #   extern struct page *fake_status;
-        #
-        # Do NOT define fake_status as char[].
+        # Do NOT inject fallback symbols for RSKSU, otherwise Clang fails with:
+        #   error: redefinition of 'initialize_fake_status'
         #
 
-        echo "Checking ReSukiSU/SUSFS SELinux fake status symbols..."
-
-        FAKE_STATUS_TARGET="$(grep -Rsl 'my_sel_open_handle_status' . --include='*.c' | head -n 1 || true)"
-
-        if [ -n "$FAKE_STATUS_TARGET" ]; then
-          echo "Found my_sel_open_handle_status in: $FAKE_STATUS_TARGET"
-
-          echo "Current fake-status references/definitions:"
-          grep -Rnw . \
-            -e 'fake_status_initialize_key' \
-            -e 'ksu_selinux_hide_enabled' \
-            -e 'fake_status' \
-            -e 'initialize_fake_status' \
-            -e 'my_sel_open_handle_status' \
-            --include='*.c' --include='*.h' || true
-
-          # Add required headers near the include section.
-          grep -q '#include <linux/jump_label.h>' "$FAKE_STATUS_TARGET" || \
-            sed -i '/^#include /a #include <linux/jump_label.h>' "$FAKE_STATUS_TARGET"
-
-          grep -q '#include <linux/mm.h>' "$FAKE_STATUS_TARGET" || \
-            sed -i '/^#include /a #include <linux/mm.h>' "$FAKE_STATUS_TARGET"
-
-          grep -q '#include <linux/gfp.h>' "$FAKE_STATUS_TARGET" || \
-            sed -i '/^#include /a #include <linux/gfp.h>' "$FAKE_STATUS_TARGET"
-
-          grep -q '#include <linux/types.h>' "$FAKE_STATUS_TARGET" || \
-            sed -i '/^#include /a #include <linux/types.h>' "$FAKE_STATUS_TARGET"
-
-          grep -q '#include <linux/cache.h>' "$FAKE_STATUS_TARGET" || \
-            sed -i '/^#include /a #include <linux/cache.h>' "$FAKE_STATUS_TARGET"
-
-          # Remove extern declarations from the file containing my_sel_open_handle_status.
-          # These externs may point to missing, static, or LTO-hidden symbols.
-          sed -i \
-            -e '/extern .*fake_status_initialize_key/d' \
-            -e '/extern .*ksu_selinux_hide_enabled/d' \
-            -e '/extern .*fake_status/d' \
-            -e '/extern .*initialize_fake_status/d' \
-            "$FAKE_STATUS_TARGET"
-
-          # Remove any previous bad fallback injection from earlier runs.
-          sed -i \
-            -e '/DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);/d' \
-            -e '/bool ksu_selinux_hide_enabled __read_mostly = false;/d' \
-            -e '/bool ksu_selinux_hide_enabled = false;/d' \
-            -e '/char fake_status\[PAGE_SIZE\];/d' \
-            -e '/struct page \*fake_status;/d' \
-            "$FAKE_STATUS_TARGET"
-
-          # Remove previous initialize_fake_status() fallback if it was injected.
-          if grep -q '^void initialize_fake_status(void)' "$FAKE_STATUS_TARGET"; then
-            sed -i '/^void initialize_fake_status(void)/,/^}/d' "$FAKE_STATUS_TARGET"
-          fi
-
-          # Also handle earlier injected version that may have leading indentation.
-          if grep -q '^[[:space:]]*void initialize_fake_status(void)' "$FAKE_STATUS_TARGET"; then
-            sed -i '/^[[:space:]]*void initialize_fake_status(void)/,/^[[:space:]]*}/d' "$FAKE_STATUS_TARGET"
-          fi
-
-          # Create fallback block without heredoc to avoid YAML/bash EOF indentation issues.
-          printf '%s\n' \
-            '' \
-            '/* ReSukiSU/SUSFS fallback fake SELinux status symbols */' \
-            'DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);' \
-            'bool ksu_selinux_hide_enabled __read_mostly = false;' \
-            'struct page *fake_status;' \
-            '' \
-            'void initialize_fake_status(void)' \
-            '{' \
-            '	if (fake_status)' \
-            '		return;' \
-            '' \
-            '	fake_status = alloc_page(GFP_KERNEL | __GFP_ZERO);' \
-            '}' \
-            > /tmp/ksu_fake_status_block.txt
-
-          # Inject fallback after the include block, not at the top of the file.
-          awk '
-            BEGIN {
-              inserted = 0
-            }
-
-            /^#include / {
-              print
-              next
-            }
-
-            inserted == 0 {
-              while ((getline line < "/tmp/ksu_fake_status_block.txt") > 0) {
-                print line
-              }
-              close("/tmp/ksu_fake_status_block.txt")
-              inserted = 1
-            }
-
-            {
-              print
-            }
-          ' "$FAKE_STATUS_TARGET" > "${FAKE_STATUS_TARGET}.tmp"
-
-          mv "${FAKE_STATUS_TARGET}.tmp" "$FAKE_STATUS_TARGET"
-
-          echo "SELinux fake-status symbol state after fix:"
-          grep -Rnw "$FAKE_STATUS_TARGET" \
-            -e 'fake_status_initialize_key' \
-            -e 'ksu_selinux_hide_enabled' \
-            -e 'fake_status' \
-            -e 'initialize_fake_status' \
-            -e 'my_sel_open_handle_status' || true
-
-          echo "Top of $FAKE_STATUS_TARGET after fake-status fix:"
-          sed -n '1,100p' "$FAKE_STATUS_TARGET"
+        if [ "${{ inputs.ksu_type }}" = "RSKSU" ]; then
+          echo "Skipping generic fake-status fallback for ReSukiSU; ReSukiSU provides native symbols"
         else
-          echo "my_sel_open_handle_status not found, skipping fake-status fix"
+          echo "Checking SUSFS SELinux fake-status symbols for non-ReSukiSU variant..."
+
+          FAKE_STATUS_TARGET="$(grep -Rsl 'my_sel_open_handle_status' . --include='*.c' | head -n 1 || true)"
+
+          if [ -n "$FAKE_STATUS_TARGET" ]; then
+            echo "Found fake-status target: $FAKE_STATUS_TARGET"
+
+            add_include_once() {
+              local header="$1"
+              local file="$2"
+
+              if grep -qxF "#include <$header>" "$file"; then
+                echo "Header already present: <$header>"
+                return 0
+              fi
+
+              awk -v inc="#include <${header}>" '
+                BEGIN {
+                  inserted = 0
+                }
+
+                /^#include / && inserted == 0 {
+                  print
+                  print inc
+                  inserted = 1
+                  next
+                }
+
+                {
+                  print
+                }
+
+                END {
+                  if (inserted == 0) {
+                    print inc
+                  }
+                }
+              ' "$file" > "${file}.include_tmp"
+
+              mv "${file}.include_tmp" "$file"
+
+              echo "Added header: <$header>"
+            }
+
+            add_include_once "linux/jump_label.h" "$FAKE_STATUS_TARGET"
+            add_include_once "linux/mm.h" "$FAKE_STATUS_TARGET"
+            add_include_once "linux/gfp.h" "$FAKE_STATUS_TARGET"
+            add_include_once "linux/types.h" "$FAKE_STATUS_TARGET"
+            add_include_once "linux/cache.h" "$FAKE_STATUS_TARGET"
+
+            sed -i \
+              -e '/extern .*fake_status_initialize_key/d' \
+              -e '/extern .*ksu_selinux_hide_enabled/d' \
+              -e '/extern .*fake_status/d' \
+              -e '/extern .*initialize_fake_status/d' \
+              "$FAKE_STATUS_TARGET"
+
+            sed -i \
+              -e '/\/\* ReSukiSU\/SUSFS fallback fake SELinux status symbols \*\//,/^}$/d' \
+              -e '/\/\* SUSFS fallback fake SELinux status symbols \*\//,/^}$/d' \
+              -e '/^DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);/d' \
+              -e '/^bool ksu_selinux_hide_enabled __read_mostly = false;/d' \
+              -e '/^bool ksu_selinux_hide_enabled = false;/d' \
+              -e '/^char fake_status\[PAGE_SIZE\];/d' \
+              -e '/^struct page \*fake_status;/d' \
+              "$FAKE_STATUS_TARGET"
+
+            if grep -q '^void initialize_fake_status(void)' "$FAKE_STATUS_TARGET"; then
+              sed -i '/^void initialize_fake_status(void)/,/^}/d' "$FAKE_STATUS_TARGET"
+            fi
+
+            printf '%s\n' \
+              '' \
+              '/* SUSFS fallback fake SELinux status symbols */' \
+              'DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);' \
+              'bool ksu_selinux_hide_enabled __read_mostly = false;' \
+              'struct page *fake_status;' \
+              '' \
+              'void initialize_fake_status(void)' \
+              '{' \
+              '	if (fake_status)' \
+              '		return;' \
+              '' \
+              '	fake_status = alloc_page(GFP_KERNEL | __GFP_ZERO);' \
+              '}' \
+              > /tmp/ksu_fake_status_block.txt
+
+            awk '
+              BEGIN {
+                inserted = 0
+                seen_include = 0
+              }
+
+              /^#include / {
+                seen_include = 1
+                print
+                next
+              }
+
+              seen_include == 1 && inserted == 0 {
+                while ((getline line < "/tmp/ksu_fake_status_block.txt") > 0) {
+                  print line
+                }
+                close("/tmp/ksu_fake_status_block.txt")
+                inserted = 1
+              }
+
+              {
+                print
+              }
+
+              END {
+                if (inserted == 0) {
+                  while ((getline line < "/tmp/ksu_fake_status_block.txt") > 0) {
+                    print line
+                  }
+                  close("/tmp/ksu_fake_status_block.txt")
+                }
+              }
+            ' "$FAKE_STATUS_TARGET" > "${FAKE_STATUS_TARGET}.tmp"
+
+            mv "${FAKE_STATUS_TARGET}.tmp" "$FAKE_STATUS_TARGET"
+
+            echo "SELinux fake-status symbol state after fix:"
+            grep -Rnw "$FAKE_STATUS_TARGET" \
+              -e 'fake_status_initialize_key' \
+              -e 'ksu_selinux_hide_enabled' \
+              -e 'fake_status' \
+              -e 'initialize_fake_status' \
+              -e 'my_sel_open_handle_status' || true
+
+            echo "Top of $FAKE_STATUS_TARGET after fake-status fix:"
+            sed -n '1,120p' "$FAKE_STATUS_TARGET"
+          else
+            echo "my_sel_open_handle_status not found, skipping fake-status fallback"
+          fi
         fi
 
         echo "✅ SUSFS patches applied"
@@ -1749,15 +1768,19 @@ runs:
 
         sed -i \
           -e '/\/\* ReSukiSU\/SUSFS fallback fake SELinux status symbols \*\//,/^}$/d' \
-          -e '/DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);/d' \
-          -e '/bool ksu_selinux_hide_enabled __read_mostly = false;/d' \
-          -e '/bool ksu_selinux_hide_enabled = false;/d' \
-          -e '/char fake_status\[PAGE_SIZE\];/d' \
-          -e '/struct page \*fake_status;/d' \
+          -e '/\/\* SUSFS fallback fake SELinux status symbols \*\//,/^}$/d' \
           "$FAKE_STATUS_TARGET"
 
-        if grep -q '^[[:space:]]*void initialize_fake_status(void)' "$FAKE_STATUS_TARGET"; then
-          sed -i '/^[[:space:]]*void initialize_fake_status(void)/,/^[[:space:]]*}/d' "$FAKE_STATUS_TARGET"
+        sed -i \
+          -e '/^DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);/d' \
+          -e '/^bool ksu_selinux_hide_enabled __read_mostly = false;/d' \
+          -e '/^bool ksu_selinux_hide_enabled = false;/d' \
+          -e '/^char fake_status\[PAGE_SIZE\];/d' \
+          -e '/^struct page \*fake_status;/d' \
+          "$FAKE_STATUS_TARGET"
+
+        if grep -q '^void initialize_fake_status(void)' "$FAKE_STATUS_TARGET"; then
+          sed -i '/^void initialize_fake_status(void)/,/^}/d' "$FAKE_STATUS_TARGET"
         fi
 
         echo
@@ -1825,62 +1848,42 @@ runs:
         add_include_once "linux/cache.h" "$FAKE_STATUS_TARGET"
 
         echo
-        echo "== Creating fallback fake-status block =="
+        echo "== Checking whether ReSukiSU already provides fake-status symbols =="
 
-        printf '%s\n' \
-          '' \
-          '/* ReSukiSU/SUSFS fallback fake SELinux status symbols */' \
-          'DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);' \
-          'bool ksu_selinux_hide_enabled __read_mostly = false;' \
-          'struct page *fake_status;' \
-          '' \
-          'void initialize_fake_status(void)' \
-          '{' \
-          '	if (fake_status)' \
-          '		return;' \
-          '' \
-          '	fake_status = alloc_page(GFP_KERNEL | __GFP_ZERO);' \
-          '}' \
-          > /tmp/ksu_fake_status_block.txt
+        HAS_RE_SUKISU_FAKE_STATUS=0
+
+        if grep -qE '^[[:space:]]*__maybe_static[[:space:]]+bool[[:space:]]+ksu_selinux_hide_enabled' "$FAKE_STATUS_TARGET" &&
+           grep -qE '^[[:space:]]*__maybe_static[[:space:]]+struct[[:space:]]+page[[:space:]]+\*fake_status' "$FAKE_STATUS_TARGET" &&
+           grep -qE '^[[:space:]]*__maybe_static[[:space:]]+void[[:space:]]+initialize_fake_status[[:space:]]*\(' "$FAKE_STATUS_TARGET"; then
+          HAS_RE_SUKISU_FAKE_STATUS=1
+        fi
+
+        if [ "$HAS_RE_SUKISU_FAKE_STATUS" = "1" ]; then
+          echo "✅ ReSukiSU native fake-status symbols found. No fallback injection needed."
+        else
+          echo "::warning::ReSukiSU native fake-status symbols not fully detected."
+          echo "::warning::Fallback injection is intentionally disabled for RSKSU to avoid duplicate symbols."
+        fi
 
         echo
-        echo "== Inserting fallback block after include section =="
+        echo "== Checking for duplicate plain fallback initialize_fake_status definitions =="
 
-        awk '
-          BEGIN {
-            inserted = 0
-            seen_include = 0
-          }
+        echo "All initialize_fake_status references/prototypes/definitions:"
+        grep -nE '^[[:space:]]*(__maybe_static[[:space:]]+)?void[[:space:]]+initialize_fake_status[[:space:]]*\(' "$FAKE_STATUS_TARGET" || true
 
-          /^#include / {
-            seen_include = 1
-            print
-            next
-          }
+        PLAIN_FALLBACK_COUNT="$(
+          grep -nE '^[[:space:]]*void[[:space:]]+initialize_fake_status[[:space:]]*\([[:space:]]*void[[:space:]]*\)' "$FAKE_STATUS_TARGET" \
+            | wc -l \
+            | tr -d ' '
+        )"
 
-          seen_include == 1 && inserted == 0 {
-            while ((getline line < "/tmp/ksu_fake_status_block.txt") > 0) {
-              print line
-            }
-            close("/tmp/ksu_fake_status_block.txt")
-            inserted = 1
-          }
+        echo "plain fallback initialize_fake_status(void) count: $PLAIN_FALLBACK_COUNT"
 
-          {
-            print
-          }
-
-          END {
-            if (inserted == 0) {
-              while ((getline line < "/tmp/ksu_fake_status_block.txt") > 0) {
-                print line
-              }
-              close("/tmp/ksu_fake_status_block.txt")
-            }
-          }
-        ' "$FAKE_STATUS_TARGET" > "${FAKE_STATUS_TARGET}.tmp"
-
-        mv "${FAKE_STATUS_TARGET}.tmp" "$FAKE_STATUS_TARGET"
+        if [ "$PLAIN_FALLBACK_COUNT" -gt 0 ]; then
+          echo "::error::Plain fallback initialize_fake_status(void) still exists after repair."
+          grep -nE '^[[:space:]]*void[[:space:]]+initialize_fake_status[[:space:]]*\([[:space:]]*void[[:space:]]*\)' "$FAKE_STATUS_TARGET" || true
+          exit 1
+        fi
 
         echo
         echo "== Fake-status references after repair =="
@@ -2276,35 +2279,49 @@ runs:
         CONFIG_RUST=y
         EOF
 
-    - name: Solve Symbols Dependencies
+    - name: Solve RSKSU Symbol Dependencies
       shell: bash
+      if: ${{ inputs.ksu_type == 'RSKSU' }}
       run: |
         set -euo pipefail
         echo "::group::Solve RSKSU Symbol Dependencies"
-        echo "Injecting fallback weak symbol into RSKSU resolver..."
-        RESOLVER=$(find "$KSU_FOLDER" -name "symbol_resolver.c" | head -n 1)
+
+        echo "Checking whether weak kallsyms fallback is needed..."
+
+        RESOLVER="$(find "$KSU_FOLDER" -name "symbol_resolver.c" | head -n 1 || true)"
+
         if [ -n "$RESOLVER" ]; then
-          if ! grep -q "__weak kallsyms_on_each_symbol" "$RESOLVER"; then
+          echo "Found resolver: $RESOLVER"
+
+          if ! grep -q "__weak kallsyms_on_each_symbol" "$RESOLVER" &&
+             ! grep -q "__attribute__((weak)).*kallsyms_on_each_symbol" "$RESOLVER"; then
+
             KERNEL_VER="${{ env.KERNEL_VER }}"
-            
-            # Use appropriate function signature based on kernel version
+
             if [[ "$KERNEL_VER" == "5.15" ]]; then
               echo "Applying weak symbol signature for kernel 5.15..."
+
               cat >> "$RESOLVER" << 'EOF'
 
-        /* Fallback for missing symbols (Kernel < 6.4) */
-        int __attribute__((weak)) kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *, unsigned long), void *data) {
-            return 0;
-        }
-        EOF
+              /* Fallback for missing symbols (Kernel 5.15) */
+              int __attribute__((weak)) kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *, unsigned long), void *data)
+              {
+                  return 0;
+              }
+              EOF
+
+              echo "✅ Weak kallsyms fallback injected successfully."
+            else
+              echo "Kernel $KERNEL_VER does not require kallsyms weak fallback here."
             fi
-            echo "✅ Weak symbol injected successfully."
           else
-            echo "✅ Weak symbol already exists in resolver."
+            echo "✅ Weak kallsyms fallback already exists in resolver."
           fi
         else
           echo "⚠️ symbol_resolver.c not found, skipping weak symbol injection."
         fi
+
+        echo "::endgroup::"
     
     - name: Customize Kernel Branding
       shell: bash
