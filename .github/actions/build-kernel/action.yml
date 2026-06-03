@@ -2286,6 +2286,19 @@ runs:
         set -euo pipefail
         echo "::group::Solve RSKSU Symbol Dependencies"
 
+        KERNEL_VER="${{ env.KERNEL_VER }}"
+
+        case "$KERNEL_VER" in
+          "5.15")
+            echo "Kernel $KERNEL_VER may require kallsyms weak fallback."
+            ;;
+          *)
+            echo "Kernel $KERNEL_VER does not require kallsyms weak fallback. Skipping."
+            echo "::endgroup::"
+            exit 0
+            ;;
+        esac
+
         echo "Checking whether weak kallsyms fallback is needed..."
 
         RESOLVER="$(find "$KSU_FOLDER" -name "symbol_resolver.c" | head -n 1 || true)"
@@ -2296,24 +2309,18 @@ runs:
           if ! grep -q "__weak kallsyms_on_each_symbol" "$RESOLVER" &&
              ! grep -q "__attribute__((weak)).*kallsyms_on_each_symbol" "$RESOLVER"; then
 
-            KERNEL_VER="${{ env.KERNEL_VER }}"
+            echo "Applying weak symbol signature for kernel $KERNEL_VER..."
 
-            if [[ "$KERNEL_VER" == "5.15" ]]; then
-              echo "Applying weak symbol signature for kernel 5.15..."
+            {
+              printf '\n'
+              printf '/* Fallback for missing kallsyms_on_each_symbol */\n'
+              printf 'int __attribute__((weak)) kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *, unsigned long), void *data)\n'
+              printf '{\n'
+              printf '    return 0;\n'
+              printf '}\n'
+            } >> "$RESOLVER"
 
-              cat >> "$RESOLVER" << 'EOF'
-
-                /* Fallback for missing symbols (Kernel 5.15) */
-                int __attribute__((weak)) kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *, unsigned long), void *data)
-                {
-                    return 0;
-                }
-                EOF
-
-              echo "✅ Weak kallsyms fallback injected successfully."
-            else
-              echo "Kernel $KERNEL_VER does not require kallsyms weak fallback here."
-            fi
+            echo "✅ Weak kallsyms fallback injected successfully."
           else
             echo "✅ Weak kallsyms fallback already exists in resolver."
           fi
