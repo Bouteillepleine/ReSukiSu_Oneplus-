@@ -25,6 +25,11 @@ inputs:
     description: 'Path where .git folder exists (use only if you clone multiple repos)'
     required: false
     type: string
+  delete_after_upload:
+    description: 'Delete Source files after uploading'
+    required: false
+    type: boolean
+    default: false
   debug:
     description: 'Enable Logs'
     required: false
@@ -150,5 +155,10 @@ runs:
             fi
             rm -f "$FILENAME"
           fi
+          
+          if [ "${{ inputs.delete_after_upload }}" = "true" ]; then
+            rm -rf "${{ inputs.cache_path }}"
+          fi
+          
           echo "::endgroup::"
         fi
