@@ -58,6 +58,7 @@ jobs:
     needs: prepare-release
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      count: ${{ steps.set-matrix.outputs.count }}
 
     steps:
       - name: Checkout Code
@@ -81,22 +82,54 @@ jobs:
             exit 1
           fi
 
-          echo "Validating JSON files..."
+          echo "Combining JSON files with Python..."
 
-          for file in "${files[@]}"; do
-            if [ ! -s "$file" ]; then
-              echo "::error::Empty JSON file: $file"
-              exit 1
-            fi
+          python3 - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
 
-            if ! jq empty "$file"; then
-              echo "::error::Invalid JSON file: $file"
-              exit 1
-            fi
-          done
+          files = sorted(Path("configs").rglob("*.json"))
 
-          echo "Combining JSON files..."
-          jq -s '.' "${files[@]}" > all_configs.json
+          configs = []
+          bad_files = []
+
+          for file in files:
+              try:
+                  text = file.read_text(encoding="utf-8-sig")
+
+                  if not text.strip():
+                      bad_files.append((str(file), "File is empty"))
+                      continue
+
+                  data = json.loads(text)
+
+                  if isinstance(data, list):
+                      configs.extend(data)
+                  elif isinstance(data, dict):
+                      configs.append(data)
+                  else:
+                      bad_files.append((str(file), f"Top-level JSON must be object or array, got {type(data).__name__}"))
+
+              except json.JSONDecodeError as e:
+                  bad_files.append((
+                      str(file),
+                      f"JSON decode error at line {e.lineno}, column {e.colno}: {e.msg}"
+                  ))
+              except Exception as e:
+                  bad_files.append((str(file), str(e)))
+
+          if bad_files:
+              print("::error::Invalid JSON config file(s) found")
+              for file, error in bad_files:
+                  print(f"::error file={file}::{error}")
+              sys.exit(1)
+
+          with open("all_configs.json", "w", encoding="utf-8") as f:
+              json.dump(configs, f, ensure_ascii=False, indent=2)
+
+          print(f"✅ Combined {len(configs)} config object(s) from {len(files)} file(s).")
+          PY
 
           echo "Combined config count:"
           jq 'length' all_configs.json
@@ -138,27 +171,11 @@ jobs:
               if not fetch:
                   return ""
 
-              fetch = fetch.rstrip("/")
-
-              # Common repo manifest fetch URLs may be relative-ish.
-              if fetch.startswith(".."):
-                  return fetch
-
-              return fetch
+              return fetch.rstrip("/")
 
           def build_project_url(base_url, project_name):
               base_url = base_url.rstrip("/")
               project_name = project_name.strip("/")
-
-              if "googlesource.com" in base_url:
-                  return f"{base_url}/{project_name}"
-
-              if "github.com" in base_url:
-                  return f"{base_url}/{project_name}"
-
-              if "git.codelinaro.org" in base_url or "gitlab.com" in base_url:
-                  return f"{base_url}/{project_name}"
-
               return f"{base_url}/{project_name}"
 
           def build_archive_url(base_url, project_name, rev):
@@ -172,9 +189,8 @@ jobs:
                   return f"{project_url}/archive/{encoded_rev}.tar.gz"
 
               if "git.codelinaro.org" in project_url or "gitlab.com" in project_url:
-                  # GitLab archive endpoint works better with project slug included for many repos,
-                  # but this simpler form is often accepted by GitLab-compatible hosts.
-                  return f"{project_url}/-/archive/{encoded_rev}/{Path(project_name).name}-{encoded_rev}.tar.gz"
+                  archive_name = Path(project_name).name
+                  return f"{project_url}/-/archive/{encoded_rev}/{archive_name}-{encoded_rev}.tar.gz"
 
               raise ValueError(f"Unknown toolchain provider for: {project_url}")
 
@@ -251,6 +267,7 @@ jobs:
                           continue
 
                       type_label = None
+
                       for repo_key, label in TOOLCHAIN_MAP.items():
                           if repo_key in name:
                               type_label = label
@@ -267,6 +284,7 @@ jobs:
                           continue
 
                       base_url = remotes.get(remote_name, "").rstrip("/")
+
                       if not base_url:
                           print(f"⚠️ Skipping '{name}' because remote '{remote_name}' has no fetch URL.")
                           continue
@@ -298,9 +316,10 @@ jobs:
                   print(f"⚠️ Failed to process manifest '{op_manifest}' for {op_model}: {e}")
 
           matrix = {"include": list(unique_toolchains.values())}
-
           matrix_json = json.dumps(matrix, separators=(",", ":"))
+
           gha_output("matrix", matrix_json)
+          gha_output("count", str(len(unique_toolchains)))
 
           print("-" * 70)
           print(f"✅ Processed configs: {processed}")
@@ -308,14 +327,14 @@ jobs:
           print(f"✅ Found {len(unique_toolchains)} unique projects to mirror.")
 
           if len(unique_toolchains) == 0:
-              print("::warning::No toolchain projects found. Mirror job will have an empty matrix.")
+              print("::warning::No toolchain projects found. Mirror job will be skipped.")
 
   mirror-to-release:
     name: mirror (${{ matrix.type_label }}, ${{ matrix.rev }})
     needs:
       - prepare-release
       - generate-mirror-matrix
-    if: ${{ needs.generate-mirror-matrix.outputs.matrix != '' && fromJSON(needs.generate-mirror-matrix.outputs.matrix).include[0] != null }}
+    if: ${{ needs.generate-mirror-matrix.outputs.count != '0' }}
     runs-on: ubuntu-latest
 
     strategy:
@@ -330,6 +349,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends aria2 pigz
           sudo apt-get clean
