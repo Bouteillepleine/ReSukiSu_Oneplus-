@@ -23,6 +23,12 @@ inputs:
     type: string
     default: ""
 
+  enable_adios:
+    description: 'Enable ADIOS I/O scheduler support'
+    required: false
+    type: boolean
+    default: false
+
   build_timestamp:
     description: 'Custom kernel build timestamp shown in uname -a, e.g. "Tue Feb 10 10:01:02 UTC 2026". Leave empty to use current UTC time.'
     required: false
@@ -749,12 +755,11 @@ runs:
         echo "::group::Fetch dependencies"
         set -euo pipefail
         echo "Fetching SusFS and other dependencies..."
-        
-        
+
         if [ "${{ env.OP_SUSFS }}" = true ]; then
           # Determine SUSFS branch/commit to use
           SUSFS_INPUT="${{ inputs.susfs_commit_hash_or_branch }}"
-          
+
           # Default SUSFS branches for each kernel version
           declare -A DEFAULT_SUSFS=(
             ["android12-5.10"]="gki-android12-5.10"
@@ -763,119 +768,160 @@ runs:
             ["android15-6.6"]="gki-android15-6.6"
             ["android16-6.12"]="gki-android16-6.12"
           )
-          
+
           # Determine which SUSFS ref to use
           KERNEL_KEY="${{ env.ANDROID_VER }}-${{ env.KERNEL_VER }}"
           if [ -z "$SUSFS_INPUT" ]; then
-            # use kernel-specific default
+            # Use kernel-specific default
             SUSFS_BRANCH="${DEFAULT_SUSFS[$KERNEL_KEY]:-gki-android15-6.6}"
-            echo "ℹ️  Using default SUSFS branch for $KERNEL_KEY: $SUSFS_BRANCH"
+            echo "Using default SUSFS branch for $KERNEL_KEY: $SUSFS_BRANCH"
           else
-            # 40-char hash or branch/commit passed directly
+            # Use explicitly provided branch/commit/hash
             SUSFS_BRANCH="$SUSFS_INPUT"
-            echo "🔧 Using resolved SUSFS ref: $SUSFS_BRANCH"
+            echo "Using resolved SUSFS ref: $SUSFS_BRANCH"
           fi
         fi
-        
+
         retry_fetch_archive() {
           local url="$1"
           local branch="${2:-main}"
           local max_attempts=3
           local attempt=1
-          
-          local repo_name=$(basename "$url" .git)
-          local safe_branch=$(echo "$branch" | tr '/' '_')
+
+          local repo_name
+          repo_name=$(basename "$url" .git)
+
+          local safe_branch
+          safe_branch=$(echo "$branch" | tr '/' '_')
+
           local archive_name="${repo_name}_${safe_branch}.tar.gz"
           local shm_path="/dev/shm/$archive_name"
-          
-          local nproc=$(nproc 2>/dev/null || echo 4)
-          
+
+          local nproc_count
+          nproc_count=$(nproc 2>/dev/null || echo 4)
+
           local aria_log_flags="--quiet --summary-interval=0"
           if [ "${{ inputs.debug }}" = "true" ]; then
-              aria_log_flags="--summary-interval=5" # Show progress every 5s in debug
+            aria_log_flags="--summary-interval=5"
           fi
-          
+
           local aria2_headers=(
             "--header=User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             "--header=Accept: */*"
             "--header=Connection: keep-alive"
           )
-          
+
           local download_url=""
           if [[ "$url" == *"github.com"* ]]; then
-              download_url="${url%.git}/archive/refs/heads/${branch}.tar.gz"
+            download_url="${url%.git}/archive/refs/heads/${branch}.tar.gz"
           elif [[ "$url" == *"gitlab.com"* ]]; then
-              download_url="${url%.git}/-/archive/${branch}/${repo_name}-${branch}.tar.gz"
+            download_url="${url%.git}/-/archive/${branch}/${repo_name}-${branch}.tar.gz"
           else
-              echo "::error::Unsupported host: $url"
-              return 1
+            echo "::error::Unsupported host: $url"
+            return 1
           fi
-          
+
           while [ $attempt -le $max_attempts ]; do
-              echo " Attempt $attempt/$max_attempts: High-speed fetch for $repo_name ($branch)"
-              
-              if aria2c -x16 -s16 -j16 -k1M --retry-wait=2 --max-tries=5 -d "/dev/shm" -o "$archive_name" --allow-overwrite=true "${aria2_headers[@]}" $aria_log_flags "$download_url"; then
-                  mkdir -p "$repo_name"
-                  if tar -I "pigz -p $nproc -b 256" -x --record-size=1M -f "$shm_path" -C "$repo_name" --strip-components=1 --no-same-owner; then
-                      echo "✅ Success: $repo_name synced"
-                      rm -f "$shm_path"
-                      return 0
-                  fi
+            echo "Attempt $attempt/$max_attempts: high-speed fetch for $repo_name ($branch)"
+
+            if aria2c -x16 -s16 -j16 -k1M --retry-wait=2 --max-tries=5 -d "/dev/shm" -o "$archive_name" --allow-overwrite=true "${aria2_headers[@]}" $aria_log_flags "$download_url"; then
+              mkdir -p "$repo_name"
+              if tar -I "pigz -p $nproc_count -b 256" -x --record-size=1M -f "$shm_path" -C "$repo_name" --strip-components=1 --no-same-owner; then
+                echo "Success: $repo_name synced"
+                rm -f "$shm_path"
+                return 0
               fi
-              
-              echo "⚠️ Attempt $attempt failed, clearing RAM and retrying..."
-              rm -rf "$repo_name" "$shm_path" 2>/dev/null
-              sleep 5
-              attempt=$((attempt + 1))
+            fi
+
+            echo "Attempt $attempt failed, clearing temporary files and retrying..."
+            rm -rf "$repo_name" "$shm_path" 2>/dev/null
+            sleep 5
+            attempt=$((attempt + 1))
           done
-          
+
           echo "::error::All attempts failed for $url"
           return 1
         }
-        
+
         retry_clone() {
           local url="$1"
           local branch="${2:-main}"
           local depth="${3:-1}"
-          local dir="$(basename "$url" .git)"
+          local dir
+          dir="$(basename "$url" .git)"
           local max_attempts=3
           local attempt=1
-          
-          # Build git clone args
+
           local clone_args=(--branch "$branch")
           if [ "$depth" != "0" ] && [ -n "$depth" ]; then
             clone_args+=(--depth "$depth")
           fi
-          
+
           while [ $attempt -le $max_attempts ]; do
-            echo "🔄 Attempt $attempt/$max_attempts: cloning $url ($branch)${depth:+ [depth=$depth]}"
-            
-            # Clone with dynamic args
+            echo "Attempt $attempt/$max_attempts: cloning $url ($branch)${depth:+ [depth=$depth]}"
+
             git clone "${clone_args[@]}" "$url" "$dir" && {
-              echo "✅ Success"
+              echo "Success"
               return 0
             }
-            
-            echo "❌ Failed, cleaning up..."
+
+            echo "Clone failed, cleaning up..."
             rm -rf "$dir" 2>/dev/null
             sleep $((attempt++ * 5))
           done
-          
-          echo "💥 All attempts failed"
+
+          echo "::error::All clone attempts failed for $url"
           return 1
         }
-        
+
+        retry_clone_to_dir() {
+          local url="$1"
+          local branch="${2:-main}"
+          local depth="${3:-1}"
+          local dir="$4"
+          local max_attempts=3
+          local attempt=1
+
+          local clone_args=(--branch "$branch")
+          if [ "$depth" != "0" ] && [ -n "$depth" ]; then
+            clone_args+=(--depth "$depth")
+          fi
+
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt/$max_attempts: cloning $url ($branch) into $dir"
+
+            git clone "${clone_args[@]}" "$url" "$dir" && {
+              echo "Success"
+              return 0
+            }
+
+            echo "Clone failed, cleaning up..."
+            rm -rf "$dir" 2>/dev/null
+            sleep $((attempt++ * 5))
+          done
+
+          echo "::error::All clone attempts failed for $url"
+          return 1
+        }
+
         retry_clone "https://github.com/WildKernels/kernel_patches.git" "main" "1"
-        
+
+        if [ "${{ inputs.enable_adios }}" = "true" ]; then
+          retry_clone_to_dir "https://github.com/Bouteillepleine/kernel_patches.git" "main" "1" "bouton_kernel_patches"
+          echo "ADIOS_PATCHES_FOLDER=$GITHUB_WORKSPACE/bouton_kernel_patches/experimental" >> "$GITHUB_ENV"
+          echo "ADIOS patches cloned from Bouteillepleine/kernel_patches experimental folder"
+        fi
+
         if [ "${{ env.OP_SUSFS }}" = true ]; then
           echo "Using SUSFS branch/commit: $SUSFS_BRANCH"
           if ! retry_fetch_archive "https://gitlab.com/simonpunk/susfs4ksu.git" "$SUSFS_BRANCH"; then
             echo "::error::Failed to fetch SUSFS archive after multiple attempts"
             exit 1
           fi
-          echo "SUSFS_COMMIT_SHA=$SUSFS_BRANCH" >> $GITHUB_ENV
+          echo "SUSFS_COMMIT_SHA=$SUSFS_BRANCH" >> "$GITHUB_ENV"
         fi
-        echo "✅ Dependencies cloned"
+
+        echo "Dependencies cloned"
         echo "::endgroup::"
 
     - name: Clean Up ABI Protected Exports
@@ -1198,6 +1244,111 @@ runs:
         fi       
                 
         echo "✅ Other patches applied"
+        echo "::endgroup::"
+
+    - name: 🔧 Add ADIOS I/O Scheduler
+      shell: bash
+      if: ${{ inputs.enable_adios == true || inputs.enable_adios == 'true' }}
+      run: |
+        set -euo pipefail
+        echo "::group::Add ADIOS I/O Scheduler"
+
+        cd "$COMMON_KERNEL_FOLDER"
+
+        echo "Starting ADIOS I/O scheduler support setup..."
+        echo "Kernel base version: ${KERNEL_VER:-unknown}"
+        echo "Kernel full version: ${TKERNEL_VER:-unknown}"
+        echo "Android version: ${ANDROID_VER:-unknown}"
+        echo "Model: ${OP_MODEL:-unknown}"
+        echo "SoC: ${OP_SOC:-unknown}"
+        echo "Branch: ${OP_BRANCH:-unknown}"
+
+        if [ -z "${ADIOS_PATCHES_FOLDER:-}" ]; then
+          echo "::error::ADIOS_PATCHES_FOLDER is not set"
+          exit 1
+        fi
+
+        if [ ! -d "$ADIOS_PATCHES_FOLDER" ]; then
+          echo "::error::ADIOS patches folder not found: $ADIOS_PATCHES_FOLDER"
+          exit 1
+        fi
+
+        PATCH_FILE=""
+
+        case "${KERNEL_VER}" in
+          "6.6")
+            PATCH_FILE="$ADIOS_PATCHES_FOLDER/adios_ioscheduler_6.6.patch"
+            ;;
+          "6.1")
+            if [ "${TKERNEL_VER:-}" = "6.1.115" ] && { [[ "${OP_BRANCH:-}" == *mt* ]] || [[ "${OP_SOC:-}" == *dimensity* ]] || [[ "${OP_SOC:-}" == *mediatek* ]] || [[ "${OP_SOC:-}" == *mt* ]]; }; then
+              PATCH_FILE="$ADIOS_PATCHES_FOLDER/adios_ioscheduler_6.1_mt6989.patch"
+            elif [ "${TKERNEL_VER:-}" = "6.1.57" ] || [ "${TKERNEL_VER:-}" = "6.1.75" ]; then
+              PATCH_FILE="$ADIOS_PATCHES_FOLDER/adios_ioscheduler_6.1_old.patch"
+            else
+              PATCH_FILE="$ADIOS_PATCHES_FOLDER/adios_ioscheduler_6.1.patch"
+            fi
+            ;;
+          *)
+            echo "::warning::ADIOS is only configured for kernel 6.1 and 6.6. Current kernel: ${KERNEL_VER}"
+            echo "::endgroup::"
+            exit 0
+            ;;
+        esac
+
+        echo "Using ADIOS patch: $PATCH_FILE"
+
+        if [ ! -f "$PATCH_FILE" ]; then
+          echo "::error::ADIOS I/O scheduler patch file not found: $PATCH_FILE"
+          echo "Available ADIOS-related files:"
+          find "$ADIOS_PATCHES_FOLDER" -maxdepth 3 -type f -iname "*adios*" -print || true
+          exit 1
+        fi
+
+        if [ -f "block/adios.c" ]; then
+          echo "ADIOS I/O scheduler source file already exists. Skipping patch application."
+        else
+          cp "$PATCH_FILE" ./adios.patch
+          echo "Applying ADIOS I/O scheduler patch..."
+
+          if patch -p1 --ignore-whitespace -F 3 < adios.patch 2>&1 | tee /tmp/adios_patch.log; then
+            echo "ADIOS I/O scheduler patch applied successfully"
+          else
+            echo "::warning::ADIOS patch application reported an issue"
+
+            if grep -q "malformed patch" /tmp/adios_patch.log; then
+              echo "::warning::Malformed patch detected. Retrying with --force."
+              patch -p1 --force --ignore-whitespace < adios.patch || true
+            fi
+
+            if find . -name "*.rej" -print -quit | grep -q .; then
+              echo "::error::ADIOS patch failed. Reject files found:"
+              find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+              exit 1
+            fi
+          fi
+
+          rm -f adios.patch
+        fi
+
+        DEFCONFIG="$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
+
+        if [ ! -f "$DEFCONFIG" ]; then
+          echo "::error::gki_defconfig not found: $DEFCONFIG"
+          exit 1
+        fi
+
+        if ! grep -q "^CONFIG_MQ_IOSCHED_ADIOS=" "$DEFCONFIG"; then
+          {
+            echo "CONFIG_MQ_IOSCHED_ADIOS=y"
+            echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y"
+          } >> "$DEFCONFIG"
+
+          echo "ADIOS I/O scheduler support enabled"
+        else
+          echo "ADIOS config already exists in gki_defconfig"
+        fi
+
+        echo "ADIOS I/O scheduler setup completed"
         echo "::endgroup::"
 
     - name: Apply NTSync Patch
@@ -2050,6 +2201,7 @@ runs:
           echo "Unicode Fix: ${{ env.OP_UNICODE }}"
           echo "NTSync: ${{ env.OP_NTSYNC }}"
           echo "Droidspaces: ${{ env.OP_DS }}"
+          echo "ADIOS I/O Scheduler: ${{ inputs.enable_adios }}"
           echo ""
           echo "Image SHA256: ${{ steps.collect_stats.outputs.image_sha256 }}"
           echo "AnyKernel3 ZIP SHA256: ${{ steps.create_zip.outputs.zip_sha256 }}"
@@ -2110,6 +2262,7 @@ runs:
           echo "| **Unicode Fix** | ${{ env.OP_UNICODE }} |"
           echo "| **NTSync** | ${{ env.OP_NTSYNC }} |"
           echo "| **Droidspaces** | ${{ env.OP_DS }} |"
+          echo "| **ADIOS I/O Scheduler** | ${{ inputs.enable_adios }} |"
 
           echo ""
           echo "### 📊 Build Metrics"
