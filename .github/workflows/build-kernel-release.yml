@@ -81,6 +81,12 @@ on:
         type: string
         default: ''
 
+      enable_adios:
+        description: 'Enable ADIOS I/O scheduler support'
+        required: false
+        type: boolean
+        default: false
+
       android12-5_10_susfs_branch_or_commit:
         description: 'Enter SusFS Branch or commit hash for android12-5.10'
         required: false
@@ -547,6 +553,7 @@ jobs:
           - Clean Build/No Ccache: ${{ inputs.clean_build && '✅ Yes' || '❌ No' }}
           - Create Release: ${{ inputs.make_release && '✅ Yes' || '❌ No' }}
           - Create Debug Artifacts: ${{ inputs.debug && '✅ Yes' || '❌ No' }}
+          - ADIOS I/O Scheduler: ${{ inputs.enable_adios && '✅ Yes' || '❌ No' }}
           - Sync toolchains: ${{ inputs.mirror_toolchains && '✅ Yes' || '❌ No' }}
 
           **SUSFS Configuration:**
@@ -803,6 +810,7 @@ jobs:
           build_timestamp: ${{ inputs.build_timestamp }}
           clean: ${{ inputs.clean_build }}
           debug: ${{ inputs.debug }}
+          enable_adios: ${{ inputs.enable_adios }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 📊 Build statistics
@@ -864,7 +872,8 @@ jobs:
           ### ${{ matrix.model }} (${{ matrix.os_version }}) - ${{ job.status == 'success' && '✅ Success' || '❌ Failed' }}
 
           **Kernel:** ${{ matrix.android_version }}-${{ matrix.kernel_version }}  
-          **Timestamp:** \`${{ steps.build.outputs.build_timestamp }}\`
+          **Timestamp:** \`${{ steps.build.outputs.build_timestamp }}\`  
+          **ADIOS I/O Scheduler:** \`${{ inputs.enable_adios }}\`
           EOF
 
           if [ "${{ matrix.susfs }}" = true ]; then
@@ -1284,7 +1293,9 @@ jobs:
           - HMBIRD SCX where enabled
           - Droidspaces where enabled
           - NTSync where enabled
+          - ADIOS I/O scheduler where enabled
           - TMPFS_XATTR and TMPFS_POSIX_ACL
+
 
           ---
 
@@ -1345,6 +1356,7 @@ jobs:
           - Added Unicode bypass fix where enabled.
           - Added Droidspaces support where enabled.
           - Added NTSync support where enabled.
+          - Added optional ADIOS I/O scheduler support for supported 6.1 and 6.6 kernels.
           - Compiler optimization: ${OPTIMIZE_LEVEL}.
 
           ---
