@@ -1441,53 +1441,7 @@ runs:
         CONFIG_TCP_CONG_BBR=y
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
-        EOF
-
-    - name: Apply BBRv3
-      if: ${{ env.OP_BBR == 'true' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        echo "::group::Apply BBRv3 patches"
-        cd "$COMMON_KERNEL_FOLDER"
-
-        BBR3_PATCH_URL=""
-
-        case "$OP_ANDROID_VERSION-$OP_KERNEL_VERSION" in
-          android13-5.15)
-            BBR3_PATCH_URL="https://raw.githubusercontent.com/luigimak/kernel_patches/refs/heads/bbr3/oneplus/bbr3/0001-Test-a13-5.15-bbrv3.patch"
-            ;;
-          android14-6.1)
-            BBR3_PATCH_URL="https://raw.githubusercontent.com/luigimak/kernel_patches/refs/heads/bbr3/oneplus/bbr3/0001-Test-a14-6.1-bbrv3.patch"
-            ;;
-          android16-6.12)
-            BBR3_PATCH_URL="https://raw.githubusercontent.com/luigimak/kernel_patches/refs/heads/bbr3/oneplus/bbr3/0001-Test-a16-6.12-bbrv3.patch"
-            ;;
-        esac
-
-        if [[ -z "$BBR3_PATCH_URL" ]]; then
-          echo "No BBRv3 patch available for $OP_ANDROID_VERSION-$OP_KERNEL_VERSION, skipping"
-          echo "::endgroup::"
-          exit 0
-        fi
-
-        echo "Using BBRv3 patch:"
-        echo "$BBR3_PATCH_URL"
-
-        curl --fail --location --silent --show-error "$BBR3_PATCH_URL" -o /tmp/bbrv3.patch
-
-        if ! patch -p1 -F 3 --forward < /tmp/bbrv3.patch; then
-          echo "::error::Failed to apply BBRv3 patch"
-          find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \; || true
-          exit 1
-        fi
-
-        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
-        CONFIG_TCP_CONG_BBR3=y
-        EOF
-
-        echo "✅ BBRv3 patches applied"
-        echo "::endgroup::"
+        EOF    
 
     - name: Add TTL Target Support
       if: ${{ env.OP_TTL == 'true' }}
