@@ -1430,127 +1430,39 @@ runs:
         CONFIG_TMPFS_POSIX_ACL=y
         EOF
 
+    - name: Add BBR
+      if: ${{ env.OP_BBR == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Add BBR"
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        CONFIG_TCP_CONG_ADVANCED=y
+        CONFIG_TCP_CONG_BBR=y
+        CONFIG_NET_SCH_FQ=y
+        CONFIG_NET_SCH_FQ_CODEL=y
+        EOF
+
     - name: Apply BBRv3 sm8850
       if: ${{ env.OP_BBR == 'true' }}
       shell: bash
       run: |
         set -euo pipefail
-        echo "::group::Apply BBRv3 sm8850"
-
+        echo "::group::Apply BBRv3 patches"
         cd "$COMMON_KERNEL_FOLDER"
 
         PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/bbr/0001-bbrv3-sm8850-full.patch"
-        PATCH_FILE="/tmp/0001-bbrv3-sm8850-full.patch"
-        DEFCONFIG="arch/arm64/configs/gki_defconfig"
 
-        echo "Kernel context:"
-        echo "  COMMON_KERNEL_FOLDER=$COMMON_KERNEL_FOLDER"
-        echo "  ANDROID_VER=${ANDROID_VER:-unknown}"
-        echo "  KERNEL_VER=${KERNEL_VER:-unknown}"
-        echo "  TKERNEL_VER=${TKERNEL_VER:-unknown}"
-        echo "  OP_BRANCH=${OP_BRANCH:-unknown}"
-        echo "  OP_MODEL=${OP_MODEL:-unknown}"
+        curl -f -Ls --retry 3 --retry-delay 2 "$PATCH_URL" -o temp.patch
 
-        echo "Downloading BBRv3 sm8850 patch..."
-        curl -f -L --retry 3 --retry-delay 2 "$PATCH_URL" -o "$PATCH_FILE"
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF        
+        CONFIG_TCP_CONG_BBR3=y        
+        EOF
 
-        echo "Patch file:"
-        ls -lh "$PATCH_FILE"
+        patch -p1 -F 3 < temp.patch
+        rm -f temp.patch
 
-        echo "Patch SHA256:"
-        sha256sum "$PATCH_FILE"
-
-        echo "Verifying patch content before applying..."
-        if ! grep -Fq 'diff --git a/net/ipv4/tcp_bbr3.c b/net/ipv4/tcp_bbr3.c' "$PATCH_FILE"; then
-          echo "::error::Patch does not contain net/ipv4/tcp_bbr3.c diff"
-          grep -nE 'tcp_bbr|BBR3|TCP_CONG_BBR3' "$PATCH_FILE" | head -80 || true
-          exit 1
-        fi
-
-        if ! grep -Fq 'config TCP_CONG_BBR3' "$PATCH_FILE"; then
-          echo "::error::Patch does not contain Kconfig symbol: config TCP_CONG_BBR3"
-          grep -nE 'BBR3|TCP_CONG_BBR3|Kconfig' "$PATCH_FILE" | head -80 || true
-          exit 1
-        fi
-
-        if ! grep -Fq 'obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o' "$PATCH_FILE"; then
-          echo "::error::Patch does not contain Makefile rule for tcp_bbr3.o"
-          grep -nE 'tcp_bbr3|TCP_CONG_BBR3|Makefile' "$PATCH_FILE" | head -80 || true
-          exit 1
-        fi
-
-        echo "Patch BBRv3 references:"
-        grep -nE 'tcp_bbr3\.c|TCP_CONG_BBR3|CONFIG_TCP_CONG_BBR3|obj-\$\(CONFIG_TCP_CONG_BBR3\)' \
-          "$PATCH_FILE" | head -80 || true
-
-        echo "Applying BBRv3 patch..."
-        if git apply --check "$PATCH_FILE"; then
-          git apply "$PATCH_FILE"
-          echo "✅ git apply succeeded"
-        else
-          echo "git apply --check failed; using patch fallback with fuzz"
-          patch -p1 -F 3 < "$PATCH_FILE"
-        fi
-
-        echo "Ensuring BBRv3 config is enabled..."
-        if [ ! -f "$DEFCONFIG" ]; then
-          echo "::error::Defconfig not found: $DEFCONFIG"
-          exit 1
-        fi
-
-        for cfg in \
-          CONFIG_TCP_CONG_ADVANCED=y \
-          CONFIG_TCP_CONG_BBR3=y \
-          CONFIG_NET_SCH_FQ=y \
-          CONFIG_NET_SCH_FQ_CODEL=y
-        do
-          grep -qxF "$cfg" "$DEFCONFIG" || echo "$cfg" >> "$DEFCONFIG"
-        done
-
-        echo "Relevant BBR/BBRv3 config lines:"
-        grep -nE 'CONFIG_TCP_CONG_ADVANCED|CONFIG_TCP_CONG_BBR3|CONFIG_TCP_CONG_BBR=|CONFIG_DEFAULT_BBR3|CONFIG_DEFAULT_TCP_CONG|CONFIG_NET_SCH_FQ' \
-          "$DEFCONFIG" || true
-
-        echo "Verifying BBRv3 integration..."
-
-        if [ ! -f net/ipv4/tcp_bbr3.c ]; then
-          echo "::error::Missing net/ipv4/tcp_bbr3.c"
-          echo "Available BBR-related files:"
-          find net/ipv4 -maxdepth 1 -type f -iname '*bbr*' -print -exec ls -lh {} \; || true
-          exit 1
-        fi
-
-        if ! grep -Fq 'config TCP_CONG_BBR3' net/ipv4/Kconfig; then
-          echo "::error::Missing Kconfig symbol: config TCP_CONG_BBR3"
-          echo "Relevant Kconfig lines:"
-          grep -nE 'BBR|BBR3|TCP_CONG' net/ipv4/Kconfig || true
-          exit 1
-        fi
-
-        if ! grep -Fq 'obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o' net/ipv4/Makefile; then
-          echo "::error::Missing Makefile rule: obj-\$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o"
-          echo "Relevant Makefile lines:"
-          grep -nE 'bbr|BBR|TCP_CONG|tcp_bbr' net/ipv4/Makefile || true
-          echo "Full net/ipv4/Makefile:"
-          cat net/ipv4/Makefile || true
-          exit 1
-        fi
-
-        if ! grep -qxF 'CONFIG_TCP_CONG_BBR3=y' "$DEFCONFIG"; then
-          echo "::error::Missing CONFIG_TCP_CONG_BBR3=y in $DEFCONFIG"
-          echo "Relevant defconfig lines:"
-          grep -nE 'BBR|TCP_CONG|DEFAULT_TCP_CONG|NET_SCH_FQ' "$DEFCONFIG" || true
-          exit 1
-        fi
-
-        echo "BBRv3 files/references:"
-        ls -lh net/ipv4/tcp_bbr3.c
-        grep -Fn 'config TCP_CONG_BBR3' net/ipv4/Kconfig
-        grep -Fn 'obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o' net/ipv4/Makefile
-
-        rm -f "$PATCH_FILE"
-
-        echo "✅ BBRv3 sm8850 applied"
+        echo "✅ BBRv3 patches applied"
         echo "::endgroup::"
 
     - name: Add TTL Target Support
