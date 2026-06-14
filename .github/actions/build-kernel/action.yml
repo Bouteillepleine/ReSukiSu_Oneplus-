@@ -1441,7 +1441,48 @@ runs:
         CONFIG_TCP_CONG_BBR=y
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
-        EOF    
+        EOF
+
+    - name: Apply BBRv3 sm8850
+      if: ${{ env.OP_BBR == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::group::Apply BBRv3 sm8850"
+    
+        cd "$COMMON_KERNEL_FOLDER"
+    
+        PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/bbr/0001-bbrv3-sm8850-full.patch"
+        PATCH_FILE="/tmp/0001-bbrv3-sm8850-full.patch"
+    
+        echo "Downloading BBRv3 sm8850 patch..."
+        curl -f -L --retry 3 --retry-delay 2 "$PATCH_URL" -o "$PATCH_FILE"
+    
+        echo "Applying BBRv3 patch..."
+        if git apply --check "$PATCH_FILE"; then
+          git apply "$PATCH_FILE"
+        else
+          echo "git apply --check failed; using patch fallback with fuzz"
+          patch -p1 -F 3 < "$PATCH_FILE"
+        fi
+    
+        echo "Ensuring BBRv3 config is enabled..."
+        if ! grep -q '^CONFIG_TCP_CONG_BBR3=y$' arch/arm64/configs/gki_defconfig; then
+          printf '\nCONFIG_TCP_CONG_BBR3=y\n' >> arch/arm64/configs/gki_defconfig
+        fi
+    
+        echo "Verifying BBRv3 integration..."
+        test -f net/ipv4/tcp_bbr3.c
+        grep -q '^CONFIG_TCP_CONG_BBR3=y$' arch/arm64/configs/gki_defconfig
+    
+        echo "Relevant BBRv3 config lines:"
+        grep -nE 'CONFIG_TCP_CONG_BBR3|CONFIG_DEFAULT_BBR3|CONFIG_DEFAULT_TCP_CONG' \
+          arch/arm64/configs/gki_defconfig || true
+    
+        rm -f "$PATCH_FILE"
+    
+        echo "✅ BBRv3 sm8850 applied"
+        echo "::endgroup::"
 
     - name: Add TTL Target Support
       if: ${{ env.OP_TTL == 'true' }}
