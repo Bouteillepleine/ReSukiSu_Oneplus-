@@ -1430,19 +1430,6 @@ runs:
         CONFIG_TMPFS_POSIX_ACL=y
         EOF
 
-    - name: Add BBR
-      if: ${{ env.OP_BBR == 'true' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        echo "Add BBR"
-        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
-        CONFIG_TCP_CONG_ADVANCED=y
-        CONFIG_TCP_CONG_BBR=y
-        CONFIG_NET_SCH_FQ=y
-        CONFIG_NET_SCH_FQ_CODEL=y
-        EOF
-
     - name: Apply BBRv3 sm8850
       if: ${{ env.OP_BBR == 'true' }}
       shell: bash
@@ -1470,8 +1457,10 @@ runs:
         echo "Patch file:"
         ls -lh "$PATCH_FILE"
 
-        echo "Patch header:"
-        head -20 "$PATCH_FILE" || true
+        echo "Verifying patch content before applying..."
+        grep -q 'diff --git a/net/ipv4/tcp_bbr3.c b/net/ipv4/tcp_bbr3.c' "$PATCH_FILE"
+        grep -q 'config TCP_CONG_BBR3' "$PATCH_FILE"
+        grep -q 'obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o' "$PATCH_FILE"
 
         echo "Applying BBRv3 patch..."
         if git apply --check "$PATCH_FILE"; then
@@ -1482,62 +1471,34 @@ runs:
           patch -p1 -F 3 < "$PATCH_FILE"
         fi
 
-        echo "Git status after BBRv3 patch:"
-        git status --short || true
-
         echo "Ensuring BBRv3 config is enabled..."
         if [ ! -f "$DEFCONFIG" ]; then
           echo "::error::Defconfig not found: $DEFCONFIG"
           exit 1
         fi
 
-        if ! grep -q '^CONFIG_TCP_CONG_ADVANCED=y$' "$DEFCONFIG"; then
-          printf '\nCONFIG_TCP_CONG_ADVANCED=y\n' >> "$DEFCONFIG"
-        fi
-
-        if ! grep -q '^CONFIG_TCP_CONG_BBR3=y$' "$DEFCONFIG"; then
-          printf 'CONFIG_TCP_CONG_BBR3=y\n' >> "$DEFCONFIG"
-        fi
-
-        if ! grep -q '^CONFIG_NET_SCH_FQ=y$' "$DEFCONFIG"; then
-          printf 'CONFIG_NET_SCH_FQ=y\n' >> "$DEFCONFIG"
-        fi
-
-        if ! grep -q '^CONFIG_NET_SCH_FQ_CODEL=y$' "$DEFCONFIG"; then
-          printf 'CONFIG_NET_SCH_FQ_CODEL=y\n' >> "$DEFCONFIG"
-        fi
-
-        echo "Leaving default TCP congestion control unchanged unless already set by tree."
+        for cfg in \
+          CONFIG_TCP_CONG_ADVANCED=y \
+          CONFIG_TCP_CONG_BBR3=y \
+          CONFIG_NET_SCH_FQ=y \
+          CONFIG_NET_SCH_FQ_CODEL=y
+        do
+          grep -qxF "$cfg" "$DEFCONFIG" || echo "$cfg" >> "$DEFCONFIG"
+        done
 
         echo "Relevant BBR/BBRv3 config lines:"
         grep -nE 'CONFIG_TCP_CONG_ADVANCED|CONFIG_TCP_CONG_BBR3|CONFIG_TCP_CONG_BBR=|CONFIG_DEFAULT_BBR3|CONFIG_DEFAULT_TCP_CONG|CONFIG_NET_SCH_FQ' \
           "$DEFCONFIG" || true
 
-        echo "Checking expected source and Kconfig/Makefile references..."
-        echo "Files containing bbr in net/ipv4:"
-        find net/ipv4 -maxdepth 1 -type f -iname '*bbr*' -print -exec ls -lh {} \; || true
-
-        echo "BBRv3 references under net/ipv4:"
-        grep -RsnE 'TCP_CONG_BBR3|tcp_bbr3|BBRv3|BBR3' net/ipv4 | head -100 || true
-
         echo "Verifying BBRv3 integration..."
+        test -f net/ipv4/tcp_bbr3.c
+        grep -q 'config TCP_CONG_BBR3' net/ipv4/Kconfig
+        grep -q 'obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o' net/ipv4/Makefile
+        grep -q '^CONFIG_TCP_CONG_BBR3=y$' "$DEFCONFIG"
 
-        if [ -f net/ipv4/tcp_bbr3.c ]; then
-          echo "✅ Found net/ipv4/tcp_bbr3.c"
-        else
-          echo "::error::net/ipv4/tcp_bbr3.c was not found after applying the patch"
-          echo "Available BBR-related files:"
-          find net/ipv4 -type f -iname '*bbr*' -print || true
-          echo "Kconfig/Makefile BBR references:"
-          grep -RsnE 'TCP_CONG_BBR3|tcp_bbr3|BBRv3|BBR3|TCP_CONG_BBR' net/ipv4/Kconfig net/ipv4/Makefile 2>/dev/null || true
-          exit 1
-        fi
-
-        if ! grep -q '^CONFIG_TCP_CONG_BBR3=y$' "$DEFCONFIG"; then
-          echo "::error::CONFIG_TCP_CONG_BBR3=y missing from $DEFCONFIG"
-          grep -nE 'BBR|TCP_CONG|DEFAULT_TCP_CONG' "$DEFCONFIG" || true
-          exit 1
-        fi
+        echo "BBRv3 files/references:"
+        ls -lh net/ipv4/tcp_bbr3.c
+        grep -nE 'TCP_CONG_BBR3|tcp_bbr3|BBR3' net/ipv4/Kconfig net/ipv4/Makefile | head -50
 
         rm -f "$PATCH_FILE"
 
