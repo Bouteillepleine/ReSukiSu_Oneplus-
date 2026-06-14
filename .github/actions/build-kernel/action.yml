@@ -1442,29 +1442,7 @@ runs:
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
         EOF
-
-    - name: Apply BBRv3 sm8850
-      if: ${{ env.OP_BBR == 'true' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        echo "::group::Apply BBRv3 patches"
-        cd "$COMMON_KERNEL_FOLDER"
-
-        PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/bbr/0001-bbrv3-sm8850-full.patch"
-
-        curl -f -Ls --retry 3 --retry-delay 2 "$PATCH_URL" -o temp.patch
-
-        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF        
-        CONFIG_TCP_CONG_BBR3=y        
-        EOF
-
-        patch -p1 -F 3 < temp.patch
-        rm -f temp.patch
-
-        echo "✅ BBRv3 patches applied"
-        echo "::endgroup::"
-
+    
     - name: Add TTL Target Support
       if: ${{ env.OP_TTL == 'true' }}
       shell: bash
