@@ -1457,10 +1457,31 @@ runs:
         echo "Patch file:"
         ls -lh "$PATCH_FILE"
 
+        echo "Patch SHA256:"
+        sha256sum "$PATCH_FILE"
+
         echo "Verifying patch content before applying..."
-        grep -q 'diff --git a/net/ipv4/tcp_bbr3.c b/net/ipv4/tcp_bbr3.c' "$PATCH_FILE"
-        grep -q 'config TCP_CONG_BBR3' "$PATCH_FILE"
-        grep -q 'obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o' "$PATCH_FILE"
+        if ! grep -Fq 'diff --git a/net/ipv4/tcp_bbr3.c b/net/ipv4/tcp_bbr3.c' "$PATCH_FILE"; then
+          echo "::error::Patch does not contain net/ipv4/tcp_bbr3.c diff"
+          grep -nE 'tcp_bbr|BBR3|TCP_CONG_BBR3' "$PATCH_FILE" | head -80 || true
+          exit 1
+        fi
+
+        if ! grep -Fq 'config TCP_CONG_BBR3' "$PATCH_FILE"; then
+          echo "::error::Patch does not contain Kconfig symbol: config TCP_CONG_BBR3"
+          grep -nE 'BBR3|TCP_CONG_BBR3|Kconfig' "$PATCH_FILE" | head -80 || true
+          exit 1
+        fi
+
+        if ! grep -Fq 'obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o' "$PATCH_FILE"; then
+          echo "::error::Patch does not contain Makefile rule for tcp_bbr3.o"
+          grep -nE 'tcp_bbr3|TCP_CONG_BBR3|Makefile' "$PATCH_FILE" | head -80 || true
+          exit 1
+        fi
+
+        echo "Patch BBRv3 references:"
+        grep -nE 'tcp_bbr3\.c|TCP_CONG_BBR3|CONFIG_TCP_CONG_BBR3|obj-\$\(CONFIG_TCP_CONG_BBR3\)' \
+          "$PATCH_FILE" | head -80 || true
 
         echo "Applying BBRv3 patch..."
         if git apply --check "$PATCH_FILE"; then
@@ -1491,14 +1512,41 @@ runs:
           "$DEFCONFIG" || true
 
         echo "Verifying BBRv3 integration..."
-        test -f net/ipv4/tcp_bbr3.c
-        grep -q 'config TCP_CONG_BBR3' net/ipv4/Kconfig
-        grep -q 'obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o' net/ipv4/Makefile
-        grep -q '^CONFIG_TCP_CONG_BBR3=y$' "$DEFCONFIG"
+
+        if [ ! -f net/ipv4/tcp_bbr3.c ]; then
+          echo "::error::Missing net/ipv4/tcp_bbr3.c"
+          echo "Available BBR-related files:"
+          find net/ipv4 -maxdepth 1 -type f -iname '*bbr*' -print -exec ls -lh {} \; || true
+          exit 1
+        fi
+
+        if ! grep -Fq 'config TCP_CONG_BBR3' net/ipv4/Kconfig; then
+          echo "::error::Missing Kconfig symbol: config TCP_CONG_BBR3"
+          echo "Relevant Kconfig lines:"
+          grep -nE 'BBR|BBR3|TCP_CONG' net/ipv4/Kconfig || true
+          exit 1
+        fi
+
+        if ! grep -Fq 'obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o' net/ipv4/Makefile; then
+          echo "::error::Missing Makefile rule: obj-\$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o"
+          echo "Relevant Makefile lines:"
+          grep -nE 'bbr|BBR|TCP_CONG|tcp_bbr' net/ipv4/Makefile || true
+          echo "Full net/ipv4/Makefile:"
+          cat net/ipv4/Makefile || true
+          exit 1
+        fi
+
+        if ! grep -qxF 'CONFIG_TCP_CONG_BBR3=y' "$DEFCONFIG"; then
+          echo "::error::Missing CONFIG_TCP_CONG_BBR3=y in $DEFCONFIG"
+          echo "Relevant defconfig lines:"
+          grep -nE 'BBR|TCP_CONG|DEFAULT_TCP_CONG|NET_SCH_FQ' "$DEFCONFIG" || true
+          exit 1
+        fi
 
         echo "BBRv3 files/references:"
         ls -lh net/ipv4/tcp_bbr3.c
-        grep -nE 'TCP_CONG_BBR3|tcp_bbr3|BBR3' net/ipv4/Kconfig net/ipv4/Makefile | head -50
+        grep -Fn 'config TCP_CONG_BBR3' net/ipv4/Kconfig
+        grep -Fn 'obj-$(CONFIG_TCP_CONG_BBR3) += tcp_bbr3.o' net/ipv4/Makefile
 
         rm -f "$PATCH_FILE"
 
