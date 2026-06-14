@@ -1449,38 +1449,98 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::Apply BBRv3 sm8850"
-    
+
         cd "$COMMON_KERNEL_FOLDER"
-    
+
         PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/bbr/0001-bbrv3-sm8850-full.patch"
         PATCH_FILE="/tmp/0001-bbrv3-sm8850-full.patch"
-    
+        DEFCONFIG="arch/arm64/configs/gki_defconfig"
+
+        echo "Kernel context:"
+        echo "  COMMON_KERNEL_FOLDER=$COMMON_KERNEL_FOLDER"
+        echo "  ANDROID_VER=${ANDROID_VER:-unknown}"
+        echo "  KERNEL_VER=${KERNEL_VER:-unknown}"
+        echo "  TKERNEL_VER=${TKERNEL_VER:-unknown}"
+        echo "  OP_BRANCH=${OP_BRANCH:-unknown}"
+        echo "  OP_MODEL=${OP_MODEL:-unknown}"
+
         echo "Downloading BBRv3 sm8850 patch..."
         curl -f -L --retry 3 --retry-delay 2 "$PATCH_URL" -o "$PATCH_FILE"
-    
+
+        echo "Patch file:"
+        ls -lh "$PATCH_FILE"
+
+        echo "Patch header:"
+        head -20 "$PATCH_FILE" || true
+
         echo "Applying BBRv3 patch..."
         if git apply --check "$PATCH_FILE"; then
           git apply "$PATCH_FILE"
+          echo "✅ git apply succeeded"
         else
           echo "git apply --check failed; using patch fallback with fuzz"
           patch -p1 -F 3 < "$PATCH_FILE"
         fi
-    
+
+        echo "Git status after BBRv3 patch:"
+        git status --short || true
+
         echo "Ensuring BBRv3 config is enabled..."
-        if ! grep -q '^CONFIG_TCP_CONG_BBR3=y$' arch/arm64/configs/gki_defconfig; then
-          printf '\nCONFIG_TCP_CONG_BBR3=y\n' >> arch/arm64/configs/gki_defconfig
+        if [ ! -f "$DEFCONFIG" ]; then
+          echo "::error::Defconfig not found: $DEFCONFIG"
+          exit 1
         fi
-    
+
+        if ! grep -q '^CONFIG_TCP_CONG_ADVANCED=y$' "$DEFCONFIG"; then
+          printf '\nCONFIG_TCP_CONG_ADVANCED=y\n' >> "$DEFCONFIG"
+        fi
+
+        if ! grep -q '^CONFIG_TCP_CONG_BBR3=y$' "$DEFCONFIG"; then
+          printf 'CONFIG_TCP_CONG_BBR3=y\n' >> "$DEFCONFIG"
+        fi
+
+        if ! grep -q '^CONFIG_NET_SCH_FQ=y$' "$DEFCONFIG"; then
+          printf 'CONFIG_NET_SCH_FQ=y\n' >> "$DEFCONFIG"
+        fi
+
+        if ! grep -q '^CONFIG_NET_SCH_FQ_CODEL=y$' "$DEFCONFIG"; then
+          printf 'CONFIG_NET_SCH_FQ_CODEL=y\n' >> "$DEFCONFIG"
+        fi
+
+        echo "Leaving default TCP congestion control unchanged unless already set by tree."
+
+        echo "Relevant BBR/BBRv3 config lines:"
+        grep -nE 'CONFIG_TCP_CONG_ADVANCED|CONFIG_TCP_CONG_BBR3|CONFIG_TCP_CONG_BBR=|CONFIG_DEFAULT_BBR3|CONFIG_DEFAULT_TCP_CONG|CONFIG_NET_SCH_FQ' \
+          "$DEFCONFIG" || true
+
+        echo "Checking expected source and Kconfig/Makefile references..."
+        echo "Files containing bbr in net/ipv4:"
+        find net/ipv4 -maxdepth 1 -type f -iname '*bbr*' -print -exec ls -lh {} \; || true
+
+        echo "BBRv3 references under net/ipv4:"
+        grep -RsnE 'TCP_CONG_BBR3|tcp_bbr3|BBRv3|BBR3' net/ipv4 | head -100 || true
+
         echo "Verifying BBRv3 integration..."
-        test -f net/ipv4/tcp_bbr3.c
-        grep -q '^CONFIG_TCP_CONG_BBR3=y$' arch/arm64/configs/gki_defconfig
-    
-        echo "Relevant BBRv3 config lines:"
-        grep -nE 'CONFIG_TCP_CONG_BBR3|CONFIG_DEFAULT_BBR3|CONFIG_DEFAULT_TCP_CONG' \
-          arch/arm64/configs/gki_defconfig || true
-    
+
+        if [ -f net/ipv4/tcp_bbr3.c ]; then
+          echo "✅ Found net/ipv4/tcp_bbr3.c"
+        else
+          echo "::error::net/ipv4/tcp_bbr3.c was not found after applying the patch"
+          echo "Available BBR-related files:"
+          find net/ipv4 -type f -iname '*bbr*' -print || true
+          echo "Kconfig/Makefile BBR references:"
+          grep -RsnE 'TCP_CONG_BBR3|tcp_bbr3|BBRv3|BBR3|TCP_CONG_BBR' net/ipv4/Kconfig net/ipv4/Makefile 2>/dev/null || true
+          exit 1
+        fi
+
+        if ! grep -q '^CONFIG_TCP_CONG_BBR3=y$' "$DEFCONFIG"; then
+          echo "::error::CONFIG_TCP_CONG_BBR3=y missing from $DEFCONFIG"
+          grep -nE 'BBR|TCP_CONG|DEFAULT_TCP_CONG' "$DEFCONFIG" || true
+          exit 1
+        fi
+
         rm -f "$PATCH_FILE"
-    
+
         echo "✅ BBRv3 sm8850 applied"
         echo "::endgroup::"
 
