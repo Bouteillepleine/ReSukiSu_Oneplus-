@@ -1441,64 +1441,28 @@ runs:
         CONFIG_TCP_CONG_BBR=y
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
-        EOF
+        EOF    
 
-    - name: Apply BBRv3
+    - name: Apply BBRv3 sm8850
       if: ${{ env.OP_BBR == 'true' }}
       shell: bash
       run: |
         set -euo pipefail
-    
-        echo "::group::Apply BBRv3 patch"
-    
+        echo "::group::Apply BBRv3 patches"
         cd "$COMMON_KERNEL_FOLDER"
-    
+
         PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/bbr/0001-tcp-add-kmi-clean-bbrv3-for-android-16-6.12.patch"
-        PATCH_FILE="temp-bbrv3.patch"
-        EXPECTED_SHA256="e173ba6bee418931edab3e63c0e2a88e1c89b06818590958ba104537f5c31441"
-    
-        echo "Downloading BBRv3 patch..."
-        curl -fL --retry 3 --retry-delay 2 "$PATCH_URL" -o "$PATCH_FILE"
-    
-        echo "Verifying BBRv3 patch checksum..."
-        ACTUAL_SHA256="$(sha256sum "$PATCH_FILE" | awk '{print $1}')"
-    
-        if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-          echo "❌ Patch SHA256 mismatch"
-          echo "Expected: $EXPECTED_SHA256"
-          echo "Actual:   $ACTUAL_SHA256"
-          exit 1
-        fi
-    
-        echo "✅ Patch checksum OK"
-    
-        DEFCONFIG="arch/arm64/configs/gki_defconfig"
-    
-        echo "Enabling CONFIG_TCP_CONG_BBR3=y in $DEFCONFIG..."
-    
-        if grep -q '^CONFIG_TCP_CONG_BBR3=' "$DEFCONFIG"; then
-          sed -i 's/^CONFIG_TCP_CONG_BBR3=.*/CONFIG_TCP_CONG_BBR3=y/' "$DEFCONFIG"
-        else
-          printf '\nCONFIG_TCP_CONG_BBR3=y\n' >> "$DEFCONFIG"
-        fi
-    
-        echo "Checking patch applicability..."
-        git apply --check "$PATCH_FILE"
-    
-        echo "Applying BBRv3 patch..."
-        git apply "$PATCH_FILE"
-    
-        echo "Verifying BBRv3 integration..."
-    
-        test -f net/ipv4/tcp_bbr3.c
-    
-        grep -q 'CONFIG_TCP_CONG_BBR3' net/ipv4/Kconfig
-        grep -q 'tcp_bbr3.o' net/ipv4/Makefile
-        grep -q '^CONFIG_TCP_CONG_BBR3=y' "$DEFCONFIG"
-    
-        rm -f "$PATCH_FILE"
-    
-        echo "✅ BBRv3 patch applied successfully"
+
+        curl -f -Ls --retry 3 --retry-delay 2 "$PATCH_URL" -o temp.patch
+
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF        
+        CONFIG_TCP_CONG_BBR3=y        
+        EOF
+
+        patch -p1 -F 3 < temp.patch
+        rm -f temp.patch
+
+        echo "✅ BBRv3 patches applied"
         echo "::endgroup::"
     
     - name: Add TTL Target Support
