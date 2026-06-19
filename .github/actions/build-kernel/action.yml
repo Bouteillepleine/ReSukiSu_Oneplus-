@@ -1441,8 +1441,38 @@ runs:
         CONFIG_TCP_CONG_BBR=y
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
-        EOF    
+        EOF
+
+    - name: BBRv3
+      shell: bash
+      run: |
+        set -euo pipefail
     
+        echo "::group::Apply BBRv3 patch"
+        cd "$COMMON_KERNEL_FOLDER"
+    
+        echo "CONFIG_TCP_CONG_BBR3=y" >> arch/arm64/configs/gki_defconfig
+    
+        PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/bbr/0001-net-tcp-backport-BBRv3-to-android16-6.12-BBRv3-only.patch"
+    
+        curl -fL "$PATCH_URL" -o temp-bbr3.patch
+    
+        echo "== Patch files =="
+        grep -E '^diff --git ' temp-bbr3.patch \
+          | sed -E 's#^diff --git a/([^ ]+) b/.*#\1#' \
+          | sort
+    
+        echo "== Check patch applies =="
+        git apply --check temp-bbr3.patch
+    
+        echo "== Apply patch =="
+        git apply temp-bbr3.patch
+    
+        rm temp-bbr3.patch
+    
+        echo "✅ BBRv3 patch applied"
+        echo "::endgroup::"
+
     - name: Add TTL Target Support
       if: ${{ env.OP_TTL == 'true' }}
       shell: bash
