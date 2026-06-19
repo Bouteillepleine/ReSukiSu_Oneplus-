@@ -1451,10 +1451,11 @@ runs:
         echo "::group::Apply BBRv3 patch"
         cd "$COMMON_KERNEL_FOLDER"
     
-        echo "CONFIG_TCP_CONG_BBR3=y" >> arch/arm64/configs/gki_defconfig
+        if ! grep -q '^CONFIG_TCP_CONG_BBR3=y$' arch/arm64/configs/gki_defconfig; then
+          echo "CONFIG_TCP_CONG_BBR3=y" >> arch/arm64/configs/gki_defconfig
+        fi
     
-        PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/bbr/0001-net-tcp-backport-BBRv3-to-android16-6.12-BBRv3-only.patch"
-    
+        PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/bbr/0001-net-tcp-backport-BBRv3-to-android16-6.12-oneplus-sm8850.patch"    
         curl -fL "$PATCH_URL" -o temp-bbr3.patch
     
         echo "== Patch files =="
