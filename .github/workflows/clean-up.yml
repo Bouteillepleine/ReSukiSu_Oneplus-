@@ -161,6 +161,7 @@ jobs:
             const LIMIT_GB = 10;
             const LIMIT_BYTES = LIMIT_GB * 1024 * 1024 * 1024;
 
+            // ✅ FIX — Shared utility functions (defined once, used locally per job)
             function formatGB(bytes) {
               return (bytes / 1024 / 1024 / 1024).toFixed(2);
             }
@@ -170,52 +171,39 @@ jobs:
             }
 
             function classifyCache(key) {
-              if (/^RSKSU-v\d+-LTO-/i.test(key) || key.includes('-LTO-')) {
-                return 'lto';
-              }
-
-              if (/^RSKSU-v\d+-/i.test(key)) {
-                return 'ccache';
-              }
-
-              if (key.toLowerCase().includes('ccache')) {
-                return 'ccache';
-              }
-
-              if (key.toLowerCase().includes('apt')) {
-                return 'apt';
-              }
-
+              if (/^RSKSU-v\d+-LTO-/i.test(key) || key.includes('-LTO-')) return 'lto';
+              if (/^RSKSU-v\d+-/i.test(key))                               return 'ccache';
+              if (key.toLowerCase().includes('ccache'))                     return 'ccache';
+              if (key.toLowerCase().includes('apt'))                        return 'apt';
               if (
                 key.toLowerCase().includes('kernel') ||
                 key.toLowerCase().includes('android') ||
                 key.toLowerCase().includes('oos')
-              ) {
-                return 'kernel';
-              }
-
+              ) return 'kernel';
               return 'other';
             }
 
+            // ✅ FIX — Exact segment matching to avoid OP13 matching OP13r/OP13S/OP13T
+            function matchesDeviceFilter(key, filter) {
+              if (filter === 'ALL') return true;
+              const segments = key.split('-');
+              // Match the filter as a contiguous run of dash-separated segments
+              const filterParts = filter.split('-');
+              const fl = filterParts.length;
+              for (let i = 0; i <= segments.length - fl; i++) {
+                if (segments.slice(i, i + fl).join('-') === filter) return true;
+              }
+              return false;
+            }
+
             function extractDeviceFromKey(key) {
-              // Expected examples:
-              // RSKSU-v3-OP12-OOS16-android15-6.6-...
-              // RSKSU-v3-LTO-OP12-OOS16-android15-6.6-...
               let normalized = key.replace(/^RSKSU-v\d+-LTO-/i, '');
               normalized = normalized.replace(/^RSKSU-v\d+-/i, '');
-
               const parts = normalized.split('-');
-
               const oosIndex = parts.findIndex(p => /^OOS\d+$/i.test(p));
-              if (oosIndex > 0) {
-                return parts.slice(0, oosIndex).join('-');
-              }
-
+              if (oosIndex > 0) return parts.slice(0, oosIndex).join('-');
               const androidIndex = parts.findIndex(p => /^android\d+$/i.test(p));
-              if (androidIndex > 0) {
-                return parts.slice(0, androidIndex).join('-');
-              }
-
+              if (androidIndex > 0) return parts.slice(0, androidIndex).join('-');
               return 'unknown';
             }
 
@@ -229,76 +217,63 @@ jobs:
 
             const cachesByType = {
               ccache: { size: 0, count: 0 },
-              lto: { size: 0, count: 0 },
-              apt: { size: 0, count: 0 },
+              lto:    { size: 0, count: 0 },
+              apt:    { size: 0, count: 0 },
               kernel: { size: 0, count: 0 },
-              other: { size: 0, count: 0 },
+              other:  { size: 0, count: 0 },
             };
 
             const cachesByDevice = new Map();
 
             const cacheAgeDistribution = {
-              fresh: 0,
+              fresh:  0,
               recent: 0,
-              old: 0,
-              stale: 0,
+              old:    0,
+              stale:  0,
             };
 
             while (true) {
               const res = await github.rest.actions.getActionsCacheList({
-                owner,
-                repo,
-                per_page: 100,
-                page,
+                owner, repo, per_page: 100, page,
               });
 
               const caches = res.data.actions_caches || [];
               if (caches.length === 0) break;
 
               for (const cache of caches) {
-                const key = cache.key || '';
+                const key      = cache.key || '';
                 const category = classifyCache(key);
-                const age = ageDays(cache.created_at);
-                const created = new Date(cache.created_at);
+                const age      = ageDays(cache.created_at);
+                const created  = new Date(cache.created_at);
 
                 totalCacheSize += cache.size_in_bytes;
                 cacheCount++;
 
-                cachesByType[category].size += cache.size_in_bytes;
-                cachesByType[category].count++;
+                cachesByType[category].size  += cache.size_in_bytes;
+                cachesByType[category].count += 1;
 
-                if (age < 7) cacheAgeDistribution.fresh++;
+                if      (age <  7) cacheAgeDistribution.fresh++;
                 else if (age < 14) cacheAgeDistribution.recent++;
                 else if (age < 30) cacheAgeDistribution.old++;
-                else cacheAgeDistribution.stale++;
+                else               cacheAgeDistribution.stale++;
 
-                if (!oldestCache || created < new Date(oldestCache.created_at)) {
-                  oldestCache = cache;
-                }
-
-                if (!newestCache || created > new Date(newestCache.created_at)) {
-                  newestCache = cache;
-                }
+                if (!oldestCache || created < new Date(oldestCache.created_at)) oldestCache = cache;
+                if (!newestCache || created > new Date(newestCache.created_at)) newestCache = cache;
 
                 if (category === 'ccache' || category === 'lto') {
                   const device = extractDeviceFromKey(key);
-
                   if (!cachesByDevice.has(device)) {
                     cachesByDevice.set(device, {
-                      size: 0,
-                      count: 0,
+                      size: 0, count: 0,
                       lastAccessed: cache.last_accessed_at,
-                      oldestAge: age,
-                      newestAge: age,
+                      oldestAge: age, newestAge: age,
                     });
                   }
-
                   const data = cachesByDevice.get(device);
-                  data.size += cache.size_in_bytes;
-                  data.count++;
+                  data.size     += cache.size_in_bytes;
+                  data.count    += 1;
                   data.oldestAge = Math.max(data.oldestAge, age);
                   data.newestAge = Math.min(data.newestAge, age);
-
                   if (new Date(cache.last_accessed_at) > new Date(data.lastAccessed)) {
                     data.lastAccessed = cache.last_accessed_at;
                   }
@@ -315,37 +290,25 @@ jobs:
 
             const shouldCleanup = forceCleanup || parseFloat(usagePercent) > 75;
 
-            let healthEmoji = '🟢';
+            let healthEmoji  = '🟢';
             let healthStatus = 'Healthy';
+            if      (parseFloat(usagePercent) > 90) { healthEmoji = '🔴'; healthStatus = 'Critical'; }
+            else if (parseFloat(usagePercent) > 75) { healthEmoji = '🟡'; healthStatus = 'Warning';  }
 
-            if (parseFloat(usagePercent) > 90) {
-              healthEmoji = '🔴';
-              healthStatus = 'Critical';
-            } else if (parseFloat(usagePercent) > 75) {
-              healthEmoji = '🟡';
-              healthStatus = 'Warning';
-            }
-
-            core.setOutput('should_cleanup', String(shouldCleanup));
+            core.setOutput('should_cleanup',  String(shouldCleanup));
             core.setOutput('total_cache_size', String(totalCacheSize));
-            core.setOutput('cache_count', String(cacheCount));
-            core.setOutput('usage_percent', usagePercent);
-            core.setOutput('ccache_count', String(cachesByType.ccache.count));
-            core.setOutput('ccache_size', String(cachesByType.ccache.size));
-            core.setOutput('lto_count', String(cachesByType.lto.count));
-            core.setOutput('lto_size', String(cachesByType.lto.size));
+            core.setOutput('cache_count',      String(cacheCount));
+            core.setOutput('usage_percent',    usagePercent);
+            core.setOutput('ccache_count',     String(cachesByType.ccache.count));
+            core.setOutput('ccache_size',      String(cachesByType.ccache.size));
+            core.setOutput('lto_count',        String(cachesByType.lto.count));
+            core.setOutput('lto_size',         String(cachesByType.lto.size));
 
             const typeRows = Object.entries(cachesByType).map(([type, data]) => {
               const percent = totalCacheSize > 0
                 ? ((data.size / totalCacheSize) * 100).toFixed(1)
                 : '0.0';
-
-              return [
-                type,
-                String(data.count),
-                formatGB(data.size),
-                `${percent}%`,
-              ];
+              return [type, String(data.count), formatGB(data.size), `${percent}%`];
             });
 
             let summary = core.summary
@@ -353,20 +316,20 @@ jobs:
               .addRaw('\n### 📊 Overall Statistics\n\n')
               .addTable([
                 [{ data: 'Metric', header: true }, { data: 'Value', header: true }],
-                ['Total Caches', String(cacheCount)],
-                ['Total Size', `${formatGB(totalCacheSize)} GB`],
-                ['GitHub Cache Limit', `${LIMIT_GB} GB`],
-                ['Usage', `${usagePercent}%`],
-                ['Available', `${(LIMIT_GB - parseFloat(formatGB(totalCacheSize))).toFixed(2)} GB`],
-                ['Status', healthStatus],
-                ['Cleanup Needed', shouldCleanup ? 'Yes' : 'No'],
+                ['Total Caches',        String(cacheCount)],
+                ['Total Size',          `${formatGB(totalCacheSize)} GB`],
+                ['GitHub Cache Limit',  `${LIMIT_GB} GB`],
+                ['Usage',               `${usagePercent}%`],
+                ['Available',           `${(LIMIT_GB - parseFloat(formatGB(totalCacheSize))).toFixed(2)} GB`],
+                ['Status',              healthStatus],
+                ['Cleanup Needed',      shouldCleanup ? 'Yes' : 'No'],
               ])
               .addRaw('\n### 🗂️ Cache Breakdown by Type\n\n')
               .addTable([
                 [
-                  { data: 'Type', header: true },
-                  { data: 'Count', header: true },
-                  { data: 'Size (GB)', header: true },
+                  { data: 'Type',       header: true },
+                  { data: 'Count',      header: true },
+                  { data: 'Size (GB)',  header: true },
                   { data: 'Percentage', header: true },
                 ],
                 ...typeRows,
@@ -374,30 +337,18 @@ jobs:
               .addRaw('\n### 📅 Cache Age Distribution\n\n')
               .addTable([
                 [
-                  { data: 'Age Range', header: true },
-                  { data: 'Count', header: true },
+                  { data: 'Age Range',  header: true },
+                  { data: 'Count',      header: true },
                   { data: 'Percentage', header: true },
                 ],
-                [
-                  'Fresh (< 7 days)',
-                  String(cacheAgeDistribution.fresh),
-                  cacheCount > 0 ? `${((cacheAgeDistribution.fresh / cacheCount) * 100).toFixed(1)}%` : '0.0%',
-                ],
-                [
-                  'Recent (7-14 days)',
-                  String(cacheAgeDistribution.recent),
-                  cacheCount > 0 ? `${((cacheAgeDistribution.recent / cacheCount) * 100).toFixed(1)}%` : '0.0%',
-                ],
-                [
-                  'Old (14-30 days)',
-                  String(cacheAgeDistribution.old),
-                  cacheCount > 0 ? `${((cacheAgeDistribution.old / cacheCount) * 100).toFixed(1)}%` : '0.0%',
-                ],
-                [
-                  'Stale (> 30 days)',
-                  String(cacheAgeDistribution.stale),
-                  cacheCount > 0 ? `${((cacheAgeDistribution.stale / cacheCount) * 100).toFixed(1)}%` : '0.0%',
-                ],
+                ['Fresh (< 7 days)',   String(cacheAgeDistribution.fresh),
+                  cacheCount > 0 ? `${((cacheAgeDistribution.fresh  / cacheCount) * 100).toFixed(1)}%` : '0.0%'],
+                ['Recent (7-14 days)', String(cacheAgeDistribution.recent),
+                  cacheCount > 0 ? `${((cacheAgeDistribution.recent / cacheCount) * 100).toFixed(1)}%` : '0.0%'],
+                ['Old (14-30 days)',   String(cacheAgeDistribution.old),
+                  cacheCount > 0 ? `${((cacheAgeDistribution.old    / cacheCount) * 100).toFixed(1)}%` : '0.0%'],
+                ['Stale (> 30 days)',  String(cacheAgeDistribution.stale),
+                  cacheCount > 0 ? `${((cacheAgeDistribution.stale  / cacheCount) * 100).toFixed(1)}%` : '0.0%'],
               ]);
 
             if (cachesByDevice.size > 0) {
@@ -409,11 +360,11 @@ jobs:
                 .addRaw('\n### 📱 Top Devices by Cache Size\n\n')
                 .addTable([
                   [
-                    { data: 'Device', header: true },
-                    { data: 'Caches', header: true },
-                    { data: 'Size (GB)', header: true },
+                    { data: 'Device',           header: true },
+                    { data: 'Caches',           header: true },
+                    { data: 'Size (GB)',         header: true },
                     { data: 'Age Range (days)', header: true },
-                    { data: 'Last Accessed', header: true },
+                    { data: 'Last Accessed',    header: true },
                   ],
                   ...topDevices.map(([device, data]) => [
                     device,
@@ -436,14 +387,9 @@ jobs:
             }
 
             summary.addRaw('\n### 💡 Recommendation\n\n');
-
-            if (parseFloat(usagePercent) > 90) {
-              summary.addRaw('- 🔴 **Urgent cleanup recommended.** Cache usage is above 90%.\n');
-            } else if (parseFloat(usagePercent) > 75) {
-              summary.addRaw('- 🟡 **Cleanup recommended soon.** Cache usage is above 75%.\n');
-            } else {
-              summary.addRaw('- 🟢 Cache usage is healthy. No immediate cleanup needed.\n');
-            }
+            if      (parseFloat(usagePercent) > 90) summary.addRaw('- 🔴 **Urgent cleanup recommended.** Cache usage is above 90%.\n');
+            else if (parseFloat(usagePercent) > 75) summary.addRaw('- 🟡 **Cleanup recommended soon.** Cache usage is above 75%.\n');
+            else                                    summary.addRaw('- 🟢 Cache usage is healthy. No immediate cleanup needed.\n');
 
             if (forceCleanup) {
               summary.addRaw('- ⚡ `force_cleanup` is enabled, so cleanup jobs may proceed regardless of usage.\n');
@@ -474,13 +420,14 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
 
-            const deviceFilter = '${{ inputs.device_filter }}';
-            const cachePattern = '${{ inputs.cache_pattern }}';
-            const dryRun = '${{ inputs.dry_run }}' === 'true';
-            const cacheAgeDays = Number.parseInt('${{ inputs.cache_age_days }}', 10);
+            const deviceFilter  = '${{ inputs.device_filter }}';
+            const cachePattern  = '${{ inputs.cache_pattern }}';
+            const dryRun        = '${{ inputs.dry_run }}' === 'true';
+            const cacheAgeDays  = Number.parseInt('${{ inputs.cache_age_days }}', 10);
             const shouldCleanup = '${{ needs.analyze.outputs.should_cleanup }}' === 'true';
-            const forceCleanup = '${{ inputs.force_cleanup }}' === 'true';
+            const forceCleanup  = '${{ inputs.force_cleanup }}' === 'true';
 
+            // ✅ FIX — Shared utility functions (same logic as analyze job)
             function formatMB(bytes) {
               return (bytes / 1024 / 1024).toFixed(2);
             }
@@ -494,55 +441,37 @@ jobs:
             }
 
             function classifyCache(key) {
-              if (/^RSKSU-v\d+-LTO-/i.test(key) || key.includes('-LTO-')) {
-                return 'lto';
-              }
-
-              if (/^RSKSU-v\d+-/i.test(key)) {
-                return 'ccache';
-              }
-
-              if (key.toLowerCase().includes('ccache')) {
-                return 'ccache';
-              }
-
-              if (key.toLowerCase().includes('apt')) {
-                return 'apt';
-              }
-
+              if (/^RSKSU-v\d+-LTO-/i.test(key) || key.includes('-LTO-')) return 'lto';
+              if (/^RSKSU-v\d+-/i.test(key))                               return 'ccache';
+              if (key.toLowerCase().includes('ccache'))                     return 'ccache';
+              if (key.toLowerCase().includes('apt'))                        return 'apt';
               if (
                 key.toLowerCase().includes('kernel') ||
                 key.toLowerCase().includes('android') ||
                 key.toLowerCase().includes('oos')
-              ) {
-                return 'kernel';
-              }
-
+              ) return 'kernel';
               return 'other';
             }
 
-            function matchesDeviceFilter(key) {
-              if (deviceFilter === 'ALL') return true;
-
-              return (
-                key.includes(deviceFilter) ||
-                key.includes(`-${deviceFilter}-`) ||
-                key.startsWith(`${deviceFilter}-`) ||
-                key.endsWith(`-${deviceFilter}`)
-              );
+            // ✅ FIX — Exact segment matching: OP13 will NOT match OP13r, OP13S, OP13T
+            function matchesDeviceFilter(key, filter) {
+              if (filter === 'ALL') return true;
+              const segments    = key.split('-');
+              const filterParts = filter.split('-');
+              const fl          = filterParts.length;
+              for (let i = 0; i <= segments.length - fl; i++) {
+                if (segments.slice(i, i + fl).join('-') === filter) return true;
+              }
+              return false;
             }
 
             function shouldDeleteCache(cache) {
-              const key = cache.key || '';
+              const key      = cache.key || '';
               const category = classifyCache(key);
-              const age = ageDays(cache.created_at);
+              const age      = ageDays(cache.created_at);
 
-              if (!matchesDeviceFilter(key)) {
-                return {
-                  delete: false,
-                  reason: 'device_filter',
-                  category,
-                };
+              if (!matchesDeviceFilter(key, deviceFilter)) {
+                return { delete: false, reason: 'device_filter', category };
               }
 
               switch (cachePattern) {
@@ -552,44 +481,34 @@ jobs:
                     reason: category === 'ccache' ? 'match' : 'pattern_mismatch',
                     category,
                   };
-
                 case 'lto_only':
                   return {
                     delete: category === 'lto',
                     reason: category === 'lto' ? 'match' : 'pattern_mismatch',
                     category,
                   };
-
                 case 'kernel_only':
                   return {
                     delete: category === 'ccache' || category === 'lto' || category === 'kernel',
-                    reason: category === 'ccache' || category === 'lto' || category === 'kernel'
-                      ? 'match'
-                      : 'pattern_mismatch',
+                    reason: (category === 'ccache' || category === 'lto' || category === 'kernel')
+                      ? 'match' : 'pattern_mismatch',
                     category,
                   };
-
                 case 'old_only':
                   return {
                     delete: age >= cacheAgeDays,
                     reason: age >= cacheAgeDays ? 'match' : 'too_new',
                     category,
                   };
-
                 case 'stale_only':
                   return {
                     delete: age >= 14,
                     reason: age >= 14 ? 'match' : 'too_new',
                     category,
                   };
-
                 case 'all_caches':
                 default:
-                  return {
-                    delete: true,
-                    reason: 'match',
-                    category,
-                  };
+                  return { delete: true, reason: 'match', category };
               }
             }
 
@@ -612,18 +531,14 @@ jobs:
             }
 
             const candidates = [];
-            const skipped = [];
-
-            let page = 1;
+            const skipped    = [];
+            let page         = 1;
 
             console.log('🔍 Collecting cache candidates...');
 
             while (true) {
               const res = await github.rest.actions.getActionsCacheList({
-                owner,
-                repo,
-                per_page: 100,
-                page,
+                owner, repo, per_page: 100, page,
               });
 
               const caches = res.data.actions_caches || [];
@@ -631,25 +546,22 @@ jobs:
 
               for (const cache of caches) {
                 const decision = shouldDeleteCache(cache);
-                const age = ageDays(cache.created_at);
+                const age      = ageDays(cache.created_at);
 
                 if (decision.delete) {
                   candidates.push({
-                    id: cache.id,
-                    key: cache.key,
-                    ref: cache.ref,
-                    sizeBytes: cache.size_in_bytes,
-                    sizeMB: formatMB(cache.size_in_bytes),
+                    id:           cache.id,
+                    key:          cache.key,
+                    ref:          cache.ref,
+                    sizeBytes:    cache.size_in_bytes,
+                    sizeMB:       formatMB(cache.size_in_bytes),
                     age,
-                    created: cache.created_at,
+                    created:      cache.created_at,
                     lastAccessed: cache.last_accessed_at,
-                    category: decision.category,
+                    category:     decision.category,
                   });
                 } else {
-                  skipped.push({
-                    key: cache.key,
-                    reason: decision.reason,
-                  });
+                  skipped.push({ key: cache.key, reason: decision.reason });
                 }
               }
 
@@ -660,15 +572,15 @@ jobs:
             candidates.sort((a, b) => b.sizeBytes - a.sizeBytes);
 
             let deletedCount = 0;
-            let deletedSize = 0;
-            const failed = [];
+            let deletedSize  = 0;
+            const failed     = [];
 
             const deletionStats = {
               ccache: { count: 0, size: 0 },
-              lto: { count: 0, size: 0 },
-              apt: { count: 0, size: 0 },
+              lto:    { count: 0, size: 0 },
+              apt:    { count: 0, size: 0 },
               kernel: { count: 0, size: 0 },
-              other: { count: 0, size: 0 },
+              other:  { count: 0, size: 0 },
             };
 
             console.log(`Found ${candidates.length} candidate cache(s).`);
@@ -687,21 +599,15 @@ jobs:
 
               try {
                 await github.rest.actions.deleteActionsCacheById({
-                  owner,
-                  repo,
-                  cache_id: cache.id,
+                  owner, repo, cache_id: cache.id,
                 });
-
                 deletedCount++;
                 deletedSize += cache.sizeBytes;
                 deletionStats[cache.category].count++;
                 deletionStats[cache.category].size += cache.sizeBytes;
               } catch (error) {
                 console.log(`   ⚠️ Failed: ${error.message}`);
-                failed.push({
-                  key: cache.key,
-                  reason: error.message,
-                });
+                failed.push({ key: cache.key, reason: error.message });
               }
             }
 
@@ -720,40 +626,35 @@ jobs:
               .addTable([
                 [{ data: 'Metric', header: true }, { data: 'Value', header: true }],
                 ['Caches ' + (dryRun ? 'to Delete' : 'Deleted'), String(deletedCount)],
-                ['Space ' + (dryRun ? 'to Free' : 'Freed'), `${formatGB(deletedSize)} GB`],
-                ['Device Filter', deviceFilter],
-                ['Cache Pattern', cachePattern],
-                ['Age Threshold', `${cacheAgeDays} days`],
-                ['Dry Run', dryRun ? 'Yes' : 'No'],
+                ['Space '  + (dryRun ? 'to Free'   : 'Freed'),   `${formatGB(deletedSize)} GB`],
+                ['Device Filter',  deviceFilter],
+                ['Cache Pattern',  cachePattern],
+                ['Age Threshold',  `${cacheAgeDays} days`],
+                ['Dry Run',        dryRun ? 'Yes' : 'No'],
               ])
               .addRaw('\n### 📊 Cleanup Breakdown\n\n')
               .addTable([
                 [
-                  { data: 'Type', header: true },
-                  { data: 'Count', header: true },
-                  { data: 'Size (GB)', header: true },
+                  { data: 'Type',       header: true },
+                  { data: 'Count',      header: true },
+                  { data: 'Size (GB)',  header: true },
                   { data: 'Percentage', header: true },
                 ],
                 ...statsRows,
               ]);
 
             if (candidates.length > 0) {
-              const topCaches = candidates.slice(0, 20);
-
               summary
                 .addRaw(`\n### 📦 Top 20 Largest Caches ${dryRun ? 'to Delete' : 'Processed'}\n\n`)
                 .addTable([
                   [
-                    { data: 'Cache Key', header: true },
-                    { data: 'Size (MB)', header: true },
+                    { data: 'Cache Key',  header: true },
+                    { data: 'Size (MB)',  header: true },
                     { data: 'Age (days)', header: true },
-                    { data: 'Type', header: true },
+                    { data: 'Type',       header: true },
                   ],
-                  ...topCaches.map(c => [
-                    c.key,
-                    c.sizeMB,
-                    String(c.age),
-                    c.category,
+                  ...candidates.slice(0, 20).map(c => [
+                    c.key, c.sizeMB, String(c.age), c.category,
                   ]),
                 ]);
             }
@@ -762,10 +663,7 @@ jobs:
               summary
                 .addRaw('\n### ⚠️ Failed Deletions\n\n')
                 .addTable([
-                  [
-                    { data: 'Cache Key', header: true },
-                    { data: 'Reason', header: true },
-                  ],
+                  [{ data: 'Cache Key', header: true }, { data: 'Reason', header: true }],
                   ...failed.map(f => [f.key, f.reason]),
                 ]);
             }
@@ -788,9 +686,9 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
 
-            const keepRecent = Number.parseInt('${{ inputs.keep_recent_runs }}', 10);
-            const daysToKeep = Number.parseInt('${{ inputs.days_to_keep }}', 10);
-            const dryRun = '${{ inputs.dry_run }}' === 'true';
+            const keepRecent  = Number.parseInt('${{ inputs.keep_recent_runs }}', 10);
+            const daysToKeep  = Number.parseInt('${{ inputs.days_to_keep }}', 10);
+            const dryRun      = '${{ inputs.dry_run }}' === 'true';
 
             const cutoffDate = new Date();
             cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
@@ -805,36 +703,27 @@ jobs:
             console.log(`Dry Run: ${dryRun}`);
 
             const workflows = await github.rest.actions.listRepoWorkflows({
-              owner,
-              repo,
-              per_page: 100,
+              owner, repo, per_page: 100,
             });
 
-            let totalDeleted = 0;
-            let totalFailed = 0;
-            let totalWouldDelete = 0;
-            const workflowStats = [];
+            let totalDeleted      = 0;
+            let totalFailed       = 0;
+            let totalWouldDelete  = 0;
+            const workflowStats   = [];
 
             for (const workflow of workflows.data.workflows) {
               console.log(`\n📋 Processing workflow: ${workflow.name}`);
 
-              let page = 1;
-              const allRuns = [];
+              let page       = 1;
+              const allRuns  = [];
 
               while (true) {
                 const runs = await github.rest.actions.listWorkflowRuns({
-                  owner,
-                  repo,
-                  workflow_id: workflow.id,
-                  per_page: 100,
-                  page,
+                  owner, repo, workflow_id: workflow.id, per_page: 100, page,
                 });
-
                 const batch = runs.data.workflow_runs || [];
                 if (batch.length === 0) break;
-
                 allRuns.push(...batch);
-
                 if (batch.length < 100) break;
                 page++;
               }
@@ -847,16 +736,12 @@ jobs:
                 successfulRuns.slice(0, keepRecent).map(run => run.id)
               );
 
-              let deletedInWorkflow = 0;
-              let failedInWorkflow = 0;
+              let deletedInWorkflow     = 0;
+              let failedInWorkflow      = 0;
               let wouldDeleteInWorkflow = 0;
 
               const statusCounts = {
-                success: 0,
-                failure: 0,
-                cancelled: 0,
-                skipped: 0,
-                other: 0,
+                success: 0, failure: 0, cancelled: 0, skipped: 0, other: 0,
               };
 
               for (const run of allRuns) {
@@ -867,9 +752,8 @@ jobs:
                   statusCounts.other++;
                 }
 
-                const runDate = new Date(run.created_at);
+                const runDate   = new Date(run.created_at);
                 const oldEnough = runDate < cutoffDate;
-
                 if (!oldEnough) continue;
 
                 let shouldDelete = false;
@@ -877,10 +761,10 @@ jobs:
                 if (conclusion === 'success') {
                   shouldDelete = !protectedSuccessIds.has(run.id);
                 } else if (
-                  conclusion === 'failure' ||
-                  conclusion === 'cancelled' ||
-                  conclusion === 'skipped' ||
-                  conclusion === 'timed_out' ||
+                  conclusion === 'failure'         ||
+                  conclusion === 'cancelled'        ||
+                  conclusion === 'skipped'          ||
+                  conclusion === 'timed_out'        ||
                   conclusion === 'action_required'
                 ) {
                   shouldDelete = true;
@@ -901,11 +785,8 @@ jobs:
 
                 try {
                   await github.rest.actions.deleteWorkflowRun({
-                    owner,
-                    repo,
-                    run_id: run.id,
+                    owner, repo, run_id: run.id,
                   });
-
                   deletedInWorkflow++;
                   totalDeleted++;
                 } catch (error) {
@@ -916,17 +797,17 @@ jobs:
               }
 
               if (
-                deletedInWorkflow > 0 ||
-                failedInWorkflow > 0 ||
+                deletedInWorkflow     > 0 ||
+                failedInWorkflow      > 0 ||
                 wouldDeleteInWorkflow > 0 ||
                 Object.values(statusCounts).some(v => v > 0)
               ) {
                 workflowStats.push({
-                  name: workflow.name,
-                  deleted: deletedInWorkflow,
-                  failed: failedInWorkflow,
+                  name:        workflow.name,
+                  deleted:     deletedInWorkflow,
+                  failed:      failedInWorkflow,
                   wouldDelete: wouldDeleteInWorkflow,
-                  stats: statusCounts,
+                  stats:       statusCounts,
                 });
               }
             }
@@ -939,10 +820,10 @@ jobs:
               .addTable([
                 [{ data: 'Metric', header: true }, { data: 'Value', header: true }],
                 ['Runs ' + (dryRun ? 'to Delete' : 'Deleted'), String(dryRun ? totalWouldDelete : totalDeleted)],
-                ['Failed Deletions', String(totalFailed)],
+                ['Failed Deletions',       String(totalFailed)],
                 ['Kept Recent Successful', String(keepRecent)],
-                ['Days Kept', String(daysToKeep)],
-                ['Dry Run', dryRun ? 'Yes' : 'No'],
+                ['Days Kept',              String(daysToKeep)],
+                ['Dry Run',                dryRun ? 'Yes' : 'No'],
               ]);
 
             if (workflowStats.length > 0) {
@@ -950,12 +831,12 @@ jobs:
                 .addRaw('\n### 📊 Per-Workflow Breakdown\n\n')
                 .addTable([
                   [
-                    { data: 'Workflow', header: true },
+                    { data: 'Workflow',                          header: true },
                     { data: dryRun ? 'Would Delete' : 'Deleted', header: true },
-                    { data: 'Failed', header: true },
-                    { data: 'Success', header: true },
-                    { data: 'Failure', header: true },
-                    { data: 'Cancelled', header: true },
+                    { data: 'Failed',                            header: true },
+                    { data: 'Success',                           header: true },
+                    { data: 'Failure',                           header: true },
+                    { data: 'Cancelled',                         header: true },
                   ],
                   ...workflowStats.map(w => [
                     w.name,
@@ -985,95 +866,73 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
 
-            const dryRun = '${{ inputs.dry_run }}' === 'true';
-            const LIMIT_GB = 10;
+            const dryRun      = '${{ inputs.dry_run }}' === 'true';
+            const LIMIT_GB    = 10;
             const LIMIT_BYTES = LIMIT_GB * 1024 * 1024 * 1024;
 
+            // ✅ FIX — Shared utility functions (same logic as other jobs)
             function formatGB(bytes) {
               return (bytes / 1024 / 1024 / 1024).toFixed(2);
             }
 
             function classifyCache(key) {
-              if (/^RSKSU-v\d+-LTO-/i.test(key) || key.includes('-LTO-')) {
-                return 'lto';
-              }
-
-              if (/^RSKSU-v\d+-/i.test(key)) {
-                return 'ccache';
-              }
-
-              if (key.toLowerCase().includes('ccache')) {
-                return 'ccache';
-              }
-
-              if (key.toLowerCase().includes('apt')) {
-                return 'apt';
-              }
-
+              if (/^RSKSU-v\d+-LTO-/i.test(key) || key.includes('-LTO-')) return 'lto';
+              if (/^RSKSU-v\d+-/i.test(key))                               return 'ccache';
+              if (key.toLowerCase().includes('ccache'))                     return 'ccache';
+              if (key.toLowerCase().includes('apt'))                        return 'apt';
               if (
                 key.toLowerCase().includes('kernel') ||
                 key.toLowerCase().includes('android') ||
                 key.toLowerCase().includes('oos')
-              ) {
-                return 'kernel';
-              }
-
+              ) return 'kernel';
               return 'other';
             }
 
             function extractDeviceFromKey(key) {
               let normalized = key.replace(/^RSKSU-v\d+-LTO-/i, '');
-              normalized = normalized.replace(/^RSKSU-v\d+-/i, '');
-
-              const parts = normalized.split('-');
+              normalized     = normalized.replace(/^RSKSU-v\d+-/i, '');
+              const parts    = normalized.split('-');
               const oosIndex = parts.findIndex(p => /^OOS\d+$/i.test(p));
-
-              if (oosIndex > 0) {
-                return parts.slice(0, oosIndex).join('-');
-              }
-
+              if (oosIndex > 0) return parts.slice(0, oosIndex).join('-');
+              const androidIndex = parts.findIndex(p => /^android\d+$/i.test(p));
+              if (androidIndex > 0) return parts.slice(0, androidIndex).join('-');
               return 'unknown';
             }
 
             console.log('📊 Generating final repository health report...');
 
-            let page = 1;
+            let page           = 1;
             let totalCacheSize = 0;
-            let cacheCount = 0;
+            let cacheCount     = 0;
 
             const cachesByType = {
-              ccache: 0,
-              lto: 0,
-              apt: 0,
-              kernel: 0,
-              other: 0,
+              ccache: 0, lto: 0, apt: 0, kernel: 0, other: 0,
             };
 
             const buildFrequency = new Map();
-            const recentCutoff = new Date();
+            const recentCutoff   = new Date();
             recentCutoff.setDate(recentCutoff.getDate() - 30);
 
             while (true) {
               const res = await github.rest.actions.getActionsCacheList({
-                owner,
-                repo,
-                per_page: 100,
-                page,
+                owner, repo, per_page: 100, page,
               });
 
               const caches = res.data.actions_caches || [];
               if (caches.length === 0) break;
 
               for (const cache of caches) {
-                const key = cache.key || '';
+                const key      = cache.key || '';
                 const category = classifyCache(key);
 
-                totalCacheSize += cache.size_in_bytes;
-                cacheCount++;
+                totalCacheSize          += cache.size_in_bytes;
+                cacheCount              += 1;
+                cachesByType[category]  += cache.size_in_bytes;
 
-                cachesByType[category] += cache.size_in_bytes;
-
-                if ((category === 'ccache' || category === 'lto') && new Date(cache.last_accessed_at) > recentCutoff) {
+                if (
+                  (category === 'ccache' || category === 'lto') &&
+                  new Date(cache.last_accessed_at) > recentCutoff
+                ) {
                   const device = extractDeviceFromKey(key);
                   buildFrequency.set(device, (buildFrequency.get(device) || 0) + 1);
                 }
@@ -1087,21 +946,15 @@ jobs:
               ? ((totalCacheSize / LIMIT_BYTES) * 100).toFixed(1)
               : '0.0';
 
-            const beforeSizeRaw = '${{ needs.analyze.outputs.total_cache_size }}';
-            const beforeCountRaw = '${{ needs.analyze.outputs.cache_count }}';
-            const beforePercentRaw = '${{ needs.analyze.outputs.usage_percent }}';
-
-            const beforeSize = Number.parseFloat(beforeSizeRaw || '0');
-            const beforeCount = Number.parseInt(beforeCountRaw || '0', 10);
-            const beforePercent = Number.parseFloat(beforePercentRaw || '0');
+            const beforeSize    = Number.parseFloat('${{ needs.analyze.outputs.total_cache_size }}' || '0');
+            const beforeCount   = Number.parseInt('${{ needs.analyze.outputs.cache_count }}'        || '0', 10);
+            const beforePercent = Number.parseFloat('${{ needs.analyze.outputs.usage_percent }}'    || '0');
 
             let changeInfo = '';
-
             if (beforeSize > 0 && !dryRun) {
-              const sizeChange = beforeSize - totalCacheSize;
-              const countChange = beforeCount - cacheCount;
+              const sizeChange    = beforeSize - totalCacheSize;
+              const countChange   = beforeCount - cacheCount;
               const percentChange = beforePercent - Number.parseFloat(usagePercent);
-
               changeInfo =
                 `\n### 📈 Cleanup Impact\n\n` +
                 `- **Space Freed:** ${formatGB(sizeChange)} GB\n` +
@@ -1109,16 +962,10 @@ jobs:
                 `- **Usage Reduced:** ${percentChange.toFixed(1)}%\n`;
             }
 
-            let healthEmoji = '🟢';
+            let healthEmoji  = '🟢';
             let healthStatus = 'Healthy';
-
-            if (Number.parseFloat(usagePercent) > 90) {
-              healthEmoji = '🔴';
-              healthStatus = 'Critical - Immediate Cleanup Needed';
-            } else if (Number.parseFloat(usagePercent) > 75) {
-              healthEmoji = '🟡';
-              healthStatus = 'Warning - Consider Cleanup Soon';
-            }
+            if      (Number.parseFloat(usagePercent) > 90) { healthEmoji = '🔴'; healthStatus = 'Critical - Immediate Cleanup Needed'; }
+            else if (Number.parseFloat(usagePercent) > 75) { healthEmoji = '🟡'; healthStatus = 'Warning - Consider Cleanup Soon';     }
 
             const typeRows = Object.entries(cachesByType).map(([type, bytes]) => [
               type,
@@ -1131,8 +978,8 @@ jobs:
               .addRaw(dryRun ? '\n**⚠️ This was a DRY RUN - no changes were made.**\n\n' : '\n')
               .addTable([
                 [
-                  { data: 'Cache Type', header: true },
-                  { data: 'Size (GB)', header: true },
+                  { data: 'Cache Type',  header: true },
+                  { data: 'Size (GB)',   header: true },
                   { data: 'Percentage', header: true },
                 ],
                 ...typeRows,
@@ -1152,7 +999,8 @@ jobs:
                 .sort((a, b) => b[1] - a[1])
                 .slice(0, 15);
 
-              summary.addRaw('\n### 📱 Build Activity Analysis - Last 30 Days\n\n')
+              summary
+                .addRaw('\n### 📱 Build Activity Analysis - Last 30 Days\n\n')
                 .addRaw(`- **Active Devices:** ${activeDevices.length}\n`)
                 .addRaw(`- **Total Cache Access Events:** ${Array.from(buildFrequency.values()).reduce((a, b) => a + b, 0)}\n`);
 
@@ -1161,19 +1009,15 @@ jobs:
                   .addRaw('\n**Top Active Devices:**\n\n')
                   .addTable([
                     [
-                      { data: 'Device', header: true },
-                      { data: 'Cache Access Events', header: true },
+                      { data: 'Device',               header: true },
+                      { data: 'Cache Access Events',  header: true },
                     ],
-                    ...activeDevices.map(([device, count]) => [
-                      device,
-                      String(count),
-                    ]),
+                    ...activeDevices.map(([device, count]) => [device, String(count)]),
                   ]);
               }
             }
 
             summary.addRaw('\n### 💡 Next Steps\n\n');
-
             if (dryRun) {
               summary.addRaw('- ℹ️ This was a dry run. Run again with `dry_run: false` to apply changes.\n');
             } else if (Number.parseFloat(usagePercent) > 75) {
@@ -1203,14 +1047,11 @@ jobs:
           ## 🚀 Quick Action Commands
 
           ### Analyze only
-
           ```bash
-          gh workflow run cleanup.yml \
-            -f cleanup_type=analyze_only
+          gh workflow run cleanup.yml -f cleanup_type=analyze_only
           ```
 
           ### Preview cleanup
-
           ```bash
           gh workflow run cleanup.yml \
             -f cleanup_type=cache_only \
@@ -1220,7 +1061,6 @@ jobs:
           ```
 
           ### Clean old caches
-
           ```bash
           gh workflow run cleanup.yml \
             -f cleanup_type=cache_only \
@@ -1229,7 +1069,6 @@ jobs:
           ```
 
           ### Clean stale caches
-
           ```bash
           gh workflow run cleanup.yml \
             -f cleanup_type=cache_only \
@@ -1237,7 +1076,6 @@ jobs:
           ```
 
           ### Clean only ccache
-
           ```bash
           gh workflow run cleanup.yml \
             -f cleanup_type=cache_only \
@@ -1246,7 +1084,6 @@ jobs:
           ```
 
           ### Clean only LTO cache
-
           ```bash
           gh workflow run cleanup.yml \
             -f cleanup_type=cache_only \
@@ -1255,7 +1092,6 @@ jobs:
           ```
 
           ### Clean specific device
-
           ```bash
           gh workflow run cleanup.yml \
             -f cleanup_type=cache_only \
@@ -1265,7 +1101,6 @@ jobs:
           ```
 
           ### Clean specific kernel version
-
           ```bash
           gh workflow run cleanup.yml \
             -f cleanup_type=cache_only \
@@ -1275,7 +1110,6 @@ jobs:
           ```
 
           ### Clean old workflow runs
-
           ```bash
           gh workflow run cleanup.yml \
             -f cleanup_type=runs_only \
@@ -1284,7 +1118,6 @@ jobs:
           ```
 
           ### Full cleanup
-
           ```bash
           gh workflow run cleanup.yml \
             -f cleanup_type=full_cleanup \
