@@ -172,25 +172,12 @@ runs:
           FINAL_ARCHIVE="$BASE_FILENAME$EXT"
           CACHE_PATH="${{ inputs.cache_path }}"
 
-          # ✅ FIX — déduire EXTRACT_DIR et BASE_NAME depuis cache_path
-          #          pour que tar extraie BASE_NAME/ dans EXTRACT_DIR/
-          #          et reconstitue exactement cache_path
-          EXTRACT_DIR="$(dirname "$CACHE_PATH")"
-          CACHE_BASE="$(basename "$CACHE_PATH")"
-
-          # ✅ FIX — NE PAS créer cache_path avant l'extraction
-          #          tar recrée CACHE_BASE/ dans EXTRACT_DIR/
-          #          Si cache_path existe déjà (run précédent), le supprimer
-          #          pour éviter une double imbrication
-          if [ -d "$CACHE_PATH" ]; then
-            echo "  Removing pre-existing cache_path to avoid nesting: $CACHE_PATH"
-            rm -rf "$CACHE_PATH"
-          fi
-          mkdir -p "$EXTRACT_DIR"
+          # ✅ FIX — extraire directement dans cache_path
+          #          l'archive contient "." comme racine (contenu direct)
+          #          → mkdir cache_path + tar -C cache_path = restauration exacte
+          mkdir -p "$CACHE_PATH"
 
           echo "  cache_path:  $CACHE_PATH"
-          echo "  extract_dir: $EXTRACT_DIR"
-          echo "  cache_base:  $CACHE_BASE"
 
           extract_cache() {
             local cmd="$1"
@@ -234,9 +221,9 @@ runs:
               else
                 echo "✅ zstd stream integrity check passed"
               fi
-              extract_cache "cat $(printf '%q ' "${PARTS_LIST[@]}") | tar -I 'zstd -d -T0' -xf - -C $(printf '%q' "$EXTRACT_DIR")"
+              extract_cache "cat $(printf '%q ' "${PARTS_LIST[@]}") | tar -I 'zstd -d -T0' -xf - -C $(printf '%q' "$CACHE_PATH")"
             else
-              extract_cache "cat $(printf '%q ' "${PARTS_LIST[@]}") | tar -xf - -C $(printf '%q' "$EXTRACT_DIR")"
+              extract_cache "cat $(printf '%q ' "${PARTS_LIST[@]}") | tar -xf - -C $(printf '%q' "$CACHE_PATH")"
             fi
 
             rm -f "${PARTS_LIST[@]}"
@@ -256,9 +243,9 @@ runs:
               else
                 echo "✅ zstd integrity check passed"
               fi
-              extract_cache "tar -I 'zstd -d -T0' -xf $(printf '%q' "$FINAL_ARCHIVE") -C $(printf '%q' "$EXTRACT_DIR")"
+              extract_cache "tar -I 'zstd -d -T0' -xf $(printf '%q' "$FINAL_ARCHIVE") -C $(printf '%q' "$CACHE_PATH")"
             else
-              extract_cache "tar -xf $(printf '%q' "$FINAL_ARCHIVE") -C $(printf '%q' "$EXTRACT_DIR")"
+              extract_cache "tar -xf $(printf '%q' "$FINAL_ARCHIVE") -C $(printf '%q' "$CACHE_PATH")"
             fi
 
             rm -f "$FINAL_ARCHIVE"
@@ -267,44 +254,13 @@ runs:
           # ──────────────────────────────────────────────
           # POST-EXTRACTION VALIDATION
           # ──────────────────────────────────────────────
-
-          # ✅ FIX — inspecter ce que tar a réellement produit dans EXTRACT_DIR
-          echo "  Contents of EXTRACT_DIR after extraction:"
-          ls -la "$EXTRACT_DIR" 2>/dev/null || true
-
-          # ✅ FIX — détecter si tar a extrait dans un sous-répertoire inattendu
-          #          (ex: archive contient .ccache/ au lieu de OOS16/)
-          if [ ! -d "$CACHE_PATH" ]; then
-            echo "::warning::Expected cache_path not found: $CACHE_PATH"
-            echo "  Searching for cache data in EXTRACT_DIR..."
-
-            # Chercher le répertoire le plus probable (le plus récent, non vide)
-            FOUND_DIR="$(
-              find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d \
-                ! -name "$(basename "$EXTRACT_DIR")" \
-                -printf '%T@ %p\n' 2>/dev/null \
-              | sort -rn \
-              | head -n1 \
-              | awk '{print $2}'
-            )"
-
-            if [ -n "$FOUND_DIR" ] && [ "$FOUND_DIR" != "$CACHE_PATH" ]; then
-              echo "  Found extracted data in: $FOUND_DIR"
-              echo "  Moving to expected cache_path: $CACHE_PATH"
-              mv "$FOUND_DIR" "$CACHE_PATH" || true
-            fi
-          fi
-
-          # Validation finale
-          if [ -d "$CACHE_PATH" ]; then
-            EXTRACTED_COUNT="$(find "$CACHE_PATH" -mindepth 1 -type f 2>/dev/null | wc -l || echo 0)"
-            if [ "$EXTRACTED_COUNT" -eq 0 ]; then
-              echo "::warning::cache_path exists but contains no files: $CACHE_PATH"
-            else
-              echo "✅ Restore complete. ~${EXTRACTED_COUNT} file(s) in $CACHE_PATH"
-            fi
+          EXTRACTED_COUNT="$(find "$CACHE_PATH" -mindepth 1 -type f 2>/dev/null | wc -l || echo 0)"
+          if [ "$EXTRACTED_COUNT" -eq 0 ]; then
+            echo "::warning::Extraction completed but no files found in $CACHE_PATH"
+            echo "  Contents of cache_path:"
+            ls -la "$CACHE_PATH" 2>/dev/null || true
           else
-            echo "::warning::cache_path does not exist after extraction: $CACHE_PATH"
+            echo "✅ Restore complete. ~${EXTRACTED_COUNT} file(s) in $CACHE_PATH"
           fi
 
           echo "::endgroup::"
