@@ -170,19 +170,27 @@ runs:
           echo "::group:: Extracting Cache"
 
           FINAL_ARCHIVE="$BASE_FILENAME$EXT"
-
-          # ✅ FIX — EXTRACT_DIR = parent de cache_path
-          #          NE PAS créer cache_path avant l'extraction :
-          #          tar recrée BASE_NAME (ex: OOS16/) dans EXTRACT_DIR
-          #          → résultat final = cache_path intact
           CACHE_PATH="${{ inputs.cache_path }}"
-          EXTRACT_DIR="$(dirname "$CACHE_PATH")"
 
-          # ✅ FIX — créer uniquement le parent, pas cache_path lui-même
+          # ✅ FIX — déduire EXTRACT_DIR et BASE_NAME depuis cache_path
+          #          pour que tar extraie BASE_NAME/ dans EXTRACT_DIR/
+          #          et reconstitue exactement cache_path
+          EXTRACT_DIR="$(dirname "$CACHE_PATH")"
+          CACHE_BASE="$(basename "$CACHE_PATH")"
+
+          # ✅ FIX — NE PAS créer cache_path avant l'extraction
+          #          tar recrée CACHE_BASE/ dans EXTRACT_DIR/
+          #          Si cache_path existe déjà (run précédent), le supprimer
+          #          pour éviter une double imbrication
+          if [ -d "$CACHE_PATH" ]; then
+            echo "  Removing pre-existing cache_path to avoid nesting: $CACHE_PATH"
+            rm -rf "$CACHE_PATH"
+          fi
           mkdir -p "$EXTRACT_DIR"
 
           echo "  cache_path:  $CACHE_PATH"
           echo "  extract_dir: $EXTRACT_DIR"
+          echo "  cache_base:  $CACHE_BASE"
 
           extract_cache() {
             local cmd="$1"
@@ -256,20 +264,47 @@ runs:
             rm -f "$FINAL_ARCHIVE"
           fi
 
-          # ✅ FIX — vérifier cache_path (pas EXTRACT_DIR) après extraction
+          # ──────────────────────────────────────────────
+          # POST-EXTRACTION VALIDATION
+          # ──────────────────────────────────────────────
+
+          # ✅ FIX — inspecter ce que tar a réellement produit dans EXTRACT_DIR
+          echo "  Contents of EXTRACT_DIR after extraction:"
+          ls -la "$EXTRACT_DIR" 2>/dev/null || true
+
+          # ✅ FIX — détecter si tar a extrait dans un sous-répertoire inattendu
+          #          (ex: archive contient .ccache/ au lieu de OOS16/)
+          if [ ! -d "$CACHE_PATH" ]; then
+            echo "::warning::Expected cache_path not found: $CACHE_PATH"
+            echo "  Searching for cache data in EXTRACT_DIR..."
+
+            # Chercher le répertoire le plus probable (le plus récent, non vide)
+            FOUND_DIR="$(
+              find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d \
+                ! -name "$(basename "$EXTRACT_DIR")" \
+                -printf '%T@ %p\n' 2>/dev/null \
+              | sort -rn \
+              | head -n1 \
+              | awk '{print $2}'
+            )"
+
+            if [ -n "$FOUND_DIR" ] && [ "$FOUND_DIR" != "$CACHE_PATH" ]; then
+              echo "  Found extracted data in: $FOUND_DIR"
+              echo "  Moving to expected cache_path: $CACHE_PATH"
+              mv "$FOUND_DIR" "$CACHE_PATH" || true
+            fi
+          fi
+
+          # Validation finale
           if [ -d "$CACHE_PATH" ]; then
-            EXTRACTED_COUNT="$(find "$CACHE_PATH" -mindepth 1 -maxdepth 3 -type f 2>/dev/null | wc -l || echo 0)"
+            EXTRACTED_COUNT="$(find "$CACHE_PATH" -mindepth 1 -type f 2>/dev/null | wc -l || echo 0)"
             if [ "$EXTRACTED_COUNT" -eq 0 ]; then
-              echo "::warning::Extraction completed but no files found in $CACHE_PATH"
-              echo "  Contents of EXTRACT_DIR ($EXTRACT_DIR):"
-              ls -la "$EXTRACT_DIR" 2>/dev/null || true
+              echo "::warning::cache_path exists but contains no files: $CACHE_PATH"
             else
               echo "✅ Restore complete. ~${EXTRACTED_COUNT} file(s) in $CACHE_PATH"
             fi
           else
             echo "::warning::cache_path does not exist after extraction: $CACHE_PATH"
-            echo "  Contents of EXTRACT_DIR ($EXTRACT_DIR):"
-            ls -la "$EXTRACT_DIR" 2>/dev/null || true
           fi
 
           echo "::endgroup::"
