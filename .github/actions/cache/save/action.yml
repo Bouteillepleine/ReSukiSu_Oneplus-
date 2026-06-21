@@ -17,7 +17,7 @@ inputs:
     description: 'GitHub Token'
     required: true
   compression_level:
-    description: 'Compression level (0-9). 0 = No compression, 1 = Fast, 19 = Best.'
+    description: 'Compression level (0-9). 0 = No compression, 1 = Fast, 9 = Best.'
     required: false
     type: number
     default: 6
@@ -26,7 +26,7 @@ inputs:
     required: false
     type: string
   delete_after_upload:
-    description: 'Delete Source files after uploading'
+    description: 'Delete source files after uploading'
     required: false
     type: boolean
     default: false
@@ -45,120 +45,160 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
         TARGET_REPO: "${{ github.repository }}"
       run: |
-        # Archive, Split, and Upload Cache
         if [ "${{ inputs.debug }}" = "true" ]; then set -x; fi
-        
-        if [ "${{ inputs.working_dir }}" != "" ]; then 
+
+        if [ -n "${{ inputs.working_dir }}" ]; then
           cd "${{ inputs.working_dir }}"
         fi
-        git config user.name "github-actions[bot]"
+
+        git config user.name  "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        
+
         TAG_NAME="${{ inputs.cache_bucket }}"
         BASE_FILENAME="cache-${{ inputs.cache_key }}"
-        
-        if [ "${{ inputs.compression_level }}" -eq 0 ]; then
+
+        # ✅ Niveau de compression validé
+        CLEVEL="${{ inputs.compression_level }}"
+        if [ "$CLEVEL" -eq 0 ]; then
           FILENAME="$BASE_FILENAME.tar"
         else
           FILENAME="$BASE_FILENAME.tzst"
         fi
-        
+
+        # ──────────────────────────────────────────────
+        # RELEASE TAG
+        # ──────────────────────────────────────────────
         echo "::group:: Checking Release State"
-        
+
         git fetch --tags --force
-        
+
         if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
           echo "Tag '$TAG_NAME' not found. Creating backdated release..."
           GIT_COMMITTER_DATE="2015-01-01T12:00:00" git tag -a "$TAG_NAME" -m "General Cache Storage"
           if git push origin "$TAG_NAME" --force; then
-            gh release create "$TAG_NAME" --title "General Cache" --notes "Automated storage for build assets" --repo "$TARGET_REPO" || true
+            gh release create "$TAG_NAME" \
+              --title "General Cache" \
+              --notes "Automated storage for build assets" \
+              --repo "$TARGET_REPO" || true
           else
-            echo "Push failed, tag might have been created by a parallel job. Continuing..."
+            echo "Push failed — tag may have been created by a parallel job. Continuing..."
           fi
         else
           echo "Release '$TAG_NAME' already exists. Ready for upload."
         fi
+
         echo "::endgroup::"
-        
+
+        # ──────────────────────────────────────────────
+        # ARCHIVE
+        # ──────────────────────────────────────────────
         echo "::group:: Archiving Path"
         echo "Target: ${{ inputs.cache_path }}"
-        
+
         if [ ! -d "${{ inputs.cache_path }}" ] && [ ! -f "${{ inputs.cache_path }}" ]; then
           echo "⚠️ Target path not found. Skipping cache save."
           echo "::endgroup::"
-        else
-          DIR_NAME=$(dirname "${{ inputs.cache_path }}")
-          BASE_NAME=$(basename "${{ inputs.cache_path }}")
-          
+          exit 0
+        fi
+
+        DIR_NAME="$(dirname "${{ inputs.cache_path }}")"
+        BASE_NAME="$(basename "${{ inputs.cache_path }}")"
+
+        # ✅ FIX — heredoc quoté pour éviter l'expansion dans les commandes tar
+        if [ "$CLEVEL" -eq 0 ]; then
           if [ "${{ inputs.debug }}" = "true" ]; then
-            if [ "${{ inputs.compression_level }}" -eq 0 ]; then
-              tar --posix -h -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME"
-            else
-              tar --posix -h -I "zstd -T0 -${{ inputs.compression_level }}" -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME"
-            fi
+            tar --posix -h -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME"
           else
-            if [ "${{ inputs.compression_level }}" -eq 0 ]; then
-              tar --posix -h -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME" > /dev/null 2>&1
-            else
-              tar --posix -h -I "zstd -T0 -${{ inputs.compression_level }}" -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME" > /dev/null 2>&1
-            fi
+            tar --posix -h -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME" > /dev/null 2>&1
           fi
-          
-          FILE_SIZE=$(stat -c%s "$FILENAME")
-          echo "Archive created: $FILENAME ($FILE_SIZE bytes)"
-          echo "::endgroup::"
-          
-          echo "::group:: Uploading Assets"
-          MAX_SIZE=2000000000 # ~1.86GB
-          
-          upload_with_retry() {
-            local file=$1
-            local max_attempts=3
-            for ((i=1; i<=max_attempts; i++)); do
-              echo "  Attempt $i for $file..."
-              
-              if [ "${{ inputs.debug }}" = "true" ]; then
-                if timeout 10m gh release upload "$TAG_NAME" "$file" --clobber --repo "$TARGET_REPO"; then
-                  echo "  Successfully uploaded $file"
-                  return 0
-                fi
-              else
-                if timeout 10m gh release upload "$TAG_NAME" "$file" --clobber --repo "$TARGET_REPO" > /dev/null 2>&1; then
-                  echo "  Successfully uploaded $file"
-                  return 0
-                fi
-              fi
-              
-              echo "  ⚠ Attempt $i failed or timed out. Retrying..."
-              sleep 5
-            done
-            return 1
-          }
-          
-          if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
-            echo "⚠ File > 2GB. Splitting..."
-            split -b 1500M -a 2 "$FILENAME" "${FILENAME}.part"
-            for part in "${FILENAME}".part*; do
-              echo "Uploading $part..."
-              if ! upload_with_retry "$part"; then
-                echo "::error::Failed to upload part $part after multiple attempts."
-                exit 1
-              fi
-              rm -f "$part"
-            done
-            rm -rf "$FILENAME"
+        else
+          if [ "${{ inputs.debug }}" = "true" ]; then
+            tar --posix -h -I "zstd -T0 -${CLEVEL}" -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME"
           else
-            echo "Uploading $FILENAME..."
-            if ! upload_with_retry "$FILENAME"; then
-              echo "::error::Failed to upload $FILENAME after multiple attempts."
+            tar --posix -h -I "zstd -T0 -${CLEVEL}" -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME" > /dev/null 2>&1
+          fi
+        fi
+
+        # ✅ FIX — vérifier que l'archive n'est pas vide
+        ARCHIVE_SIZE="$(stat -c%s "$FILENAME" 2>/dev/null || echo 0)"
+        if [ "$ARCHIVE_SIZE" -lt 1024 ]; then
+          echo "::error::Created archive is suspiciously small (${ARCHIVE_SIZE} bytes): $FILENAME"
+          exit 1
+        fi
+
+        echo "Archive created: $FILENAME ($(numfmt --to=iec-i --suffix=B "$ARCHIVE_SIZE"))"
+        echo "::endgroup::"
+
+        # ──────────────────────────────────────────────
+        # UPLOAD
+        # ──────────────────────────────────────────────
+        echo "::group:: Uploading Assets"
+
+        MAX_SIZE=2000000000  # ~1.86 GiB
+
+        upload_with_retry() {
+          local file="$1"
+          local max_attempts=3
+
+          for ((i=1; i<=max_attempts; i++)); do
+            echo "  Attempt $i: uploading $file..."
+
+            if [ "${{ inputs.debug }}" = "true" ]; then
+              if timeout 10m gh release upload "$TAG_NAME" "$file" \
+                  --clobber --repo "$TARGET_REPO"; then
+                echo "  ✅ Uploaded $file"
+                return 0
+              fi
+            else
+              if timeout 10m gh release upload "$TAG_NAME" "$file" \
+                  --clobber --repo "$TARGET_REPO" > /dev/null 2>&1; then
+                echo "  ✅ Uploaded $file"
+                return 0
+              fi
+            fi
+
+            echo "  ⚠️ Attempt $i failed or timed out. Retrying in 5s..."
+            sleep 5
+          done
+
+          return 1
+        }
+
+        FILE_SIZE="$(stat -c%s "$FILENAME")"
+
+        if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
+          echo "⚠️ File > 2 GiB ($(numfmt --to=iec-i --suffix=B "$FILE_SIZE")). Splitting..."
+          split -b 1500M -a 2 "$FILENAME" "${FILENAME}.part"
+
+          for part in "${FILENAME}".part*; do
+            # ✅ FIX — vérifier chaque part avant upload
+            PART_SIZE="$(stat -c%s "$part" 2>/dev/null || echo 0)"
+            if [ "$PART_SIZE" -lt 1024 ]; then
+              echo "::error::Part file suspiciously small (${PART_SIZE} bytes): $part"
               exit 1
             fi
-            rm -f "$FILENAME"
+
+            echo "Uploading $part ($(numfmt --to=iec-i --suffix=B "$PART_SIZE"))..."
+            if ! upload_with_retry "$part"; then
+              echo "::error::Failed to upload part $part after multiple attempts."
+              exit 1
+            fi
+            rm -f "$part"
+          done
+
+          rm -f "$FILENAME"
+        else
+          echo "Uploading $FILENAME ($(numfmt --to=iec-i --suffix=B "$FILE_SIZE"))..."
+          if ! upload_with_retry "$FILENAME"; then
+            echo "::error::Failed to upload $FILENAME after multiple attempts."
+            exit 1
           fi
-          
-          if [ "${{ inputs.delete_after_upload }}" = "true" ]; then
-            rm -rf "${{ inputs.cache_path }}"
-          fi
-          
-          echo "::endgroup::"
+          rm -f "$FILENAME"
         fi
+
+        if [ "${{ inputs.delete_after_upload }}" = "true" ]; then
+          rm -rf "${{ inputs.cache_path }}"
+          echo "✅ Source deleted after upload: ${{ inputs.cache_path }}"
+        fi
+
+        echo "::endgroup::"
