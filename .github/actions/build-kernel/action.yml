@@ -2718,6 +2718,84 @@ runs:
         retention-days: 90
         if-no-files-found: ignore
 
+    - name: 📥 Checkout Code
+      uses: actions/checkout@v6
+      if: ${{ always() && steps.build_kernel_step.conclusion == 'success' }}
+      with:
+        path: main-source
+        fetch-depth: 1
+
+    - name: Normalize ccache before saving
+      if: ${{ always() && steps.build_kernel_step.conclusion == 'success' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        unset CCACHE_DEPEND || true
+        unset CCACHE_READONLY_DIRECT || true
+        unset CCACHE_COMPRESSION || true
+        unset CCACHE_COMPRESSION_LEVEL || true
+        unset CCACHE_FILE_CLONE || true
+        unset CCACHE_INODE_CACHE || true
+
+        {
+          echo "CCACHE_COMPILERCHECK=content"
+          echo "CCACHE_COMPRESS=true"
+          echo "CCACHE_COMPRESSLEVEL=3"
+          echo "CCACHE_DIRECT=true"
+          echo "CCACHE_FILECLONE=true"
+          echo "CCACHE_INODECACHE=true"
+          echo "CCACHE_NOREADONLY_DIRECT=true"
+          echo "CCACHE_NOHASHDIR=true"
+          echo "CCACHE_IGNOREOPTIONS=--sysroot*"
+        } >> "$GITHUB_ENV"
+
+    - name: Save ccache cache
+      if: ${{ always() && steps.build_kernel_step.conclusion == 'success' }}
+      continue-on-error: true
+      uses: ./action-source/.github/actions/cache/save
+      with:
+        cache_path: ${{ env.CCACHE_DIR }}
+        cache_key: ${{ inputs.ksu_type }}-v3-${{ env.OP_MODEL }}-${{ env.OP_OS_VERSION }}-${{ env.KERNEL_FULL_VER }}-${{ env.CLANG_VERSION_SHORT }}
+        cache_bucket: "ccache-cache"
+        debug: ${{ inputs.debug }}
+        github_token: ${{ inputs.github_token }}
+        working_dir: "./main-source"
+        compression_level: 6
+
+
+    - name: Trim LTO LD cache before saving
+      if: ${{ always() && env.OP_LTO != 'none' && steps.build_kernel_step.conclusion == 'success' }}
+      continue-on-error: true
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ -d "$LDCACHE_DIR" ]; then
+          echo "LTO cache size before trim:"
+          du -sh "$LDCACHE_DIR" || true
+
+          find "$LDCACHE_DIR" -type f -mmin +360 -delete || true
+
+          echo "LTO cache size after trim:"
+          du -sh "$LDCACHE_DIR" || true
+        else
+          echo "No LTO cache directory found"
+        fi
+
+    - name: Save LTO LD cache
+      if: ${{ always() && env.OP_LTO != 'none' && steps.build_kernel_step.conclusion == 'success' }}
+      continue-on-error: true
+      uses: ./action-source/.github/actions/cache/save
+      with:
+        cache_path: ${{ env.LDCACHE_DIR }}
+        cache_key: ${{ inputs.ksu_type }}-v3-LTO-${{ env.OP_MODEL }}-${{ env.OP_OS_VERSION }}-${{ env.KERNEL_FULL_VER }}-${{ env.CLANG_VERSION_SHORT }}
+        cache_bucket: "lto-cache"
+        debug: ${{ inputs.debug }}
+        github_token: ${{ inputs.github_token }}
+        working_dir: "./main-source"
+        compression_level: 6
+
     - name: 🧹 Cleanup on failure
       if: ${{ failure() }}
       shell: bash
@@ -2725,26 +2803,25 @@ runs:
         set -euo pipefail
         echo "::group::Cleanup on failure"
 
-        echo "Build failed — freeing runner disk space"
-
+        echo "Build failed — cleaning up large temporary artifacts to free runner disk space"
+        
         if [ -d "${COMMON_KERNEL_FOLDER:-}/out" ]; then
           echo "Removing build output: $COMMON_KERNEL_FOLDER/out"
           rm -rf "$COMMON_KERNEL_FOLDER/out" || true
         fi
-
+        
         if [ -d "${SUSFS_FOLDER:-}" ]; then
           echo "Removing SUSFS sources: $SUSFS_FOLDER"
           rm -rf "$SUSFS_FOLDER" || true
         fi
-
+        
         if [ -d "${KERNEL_PATCHES_FOLDER:-}" ]; then
           echo "Removing kernel patches: $KERNEL_PATCHES_FOLDER"
           rm -rf "$KERNEL_PATCHES_FOLDER" || true
         fi
-
-        rm -f /tmp/rsksu_setup_*.sh /tmp/bbg_setup_*.sh \
-              /tmp/rustup_*.sh /tmp/clone_log_* || true
-
+        
+        rm -f /tmp/sukisu_setup_*.sh /tmp/bbg_setup_*.sh /tmp/clone_log_* || true
+        
         echo ""
         echo "Disk usage after cleanup:"
         df -h "$GITHUB_WORKSPACE" || true
