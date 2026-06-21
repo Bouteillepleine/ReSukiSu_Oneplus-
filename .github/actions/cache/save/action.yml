@@ -17,7 +17,7 @@ inputs:
     description: 'GitHub Token'
     required: true
   compression_level:
-    description: 'Compression level (0-9). 0 = No compression, 1 = Fast, 9 = Best.'
+    description: 'Compression level (0-19). 0 = No compression, 1 = Fast, 19 = Best.'
     required: false
     type: number
     default: 6
@@ -56,9 +56,8 @@ runs:
 
         TAG_NAME="${{ inputs.cache_bucket }}"
         BASE_FILENAME="cache-${{ inputs.cache_key }}"
-
-        # ✅ Niveau de compression validé
         CLEVEL="${{ inputs.compression_level }}"
+
         if [ "$CLEVEL" -eq 0 ]; then
           FILENAME="$BASE_FILENAME.tar"
         else
@@ -101,25 +100,26 @@ runs:
           exit 0
         fi
 
-        DIR_NAME="$(dirname "${{ inputs.cache_path }}")"
-        BASE_NAME="$(basename "${{ inputs.cache_path }}")"
+        # ✅ FIX — archiver le CONTENU de cache_path (BASE_NAME=".")
+        #          au lieu du dossier wrapper (BASE_NAME=OOS16)
+        #          → l'archive contient directement les fichiers à la racine
+        #          → restore extrait dans cache_path sans wrapper parasite
+        TAR_SOURCE="${{ inputs.cache_path }}"
 
-        # ✅ FIX — heredoc quoté pour éviter l'expansion dans les commandes tar
-        if [ "$CLEVEL" -eq 0 ]; then
-          if [ "${{ inputs.debug }}" = "true" ]; then
-            tar --posix -h -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME"
+        if [ "${{ inputs.debug }}" = "true" ]; then
+          if [ "$CLEVEL" -eq 0 ]; then
+            tar --posix -h -cvf "$FILENAME" -C "$TAR_SOURCE" .
           else
-            tar --posix -h -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME" > /dev/null 2>&1
+            tar --posix -h -I "zstd -T0 -${CLEVEL}" -cvf "$FILENAME" -C "$TAR_SOURCE" .
           fi
         else
-          if [ "${{ inputs.debug }}" = "true" ]; then
-            tar --posix -h -I "zstd -T0 -${CLEVEL}" -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME"
+          if [ "$CLEVEL" -eq 0 ]; then
+            tar --posix -h -cvf "$FILENAME" -C "$TAR_SOURCE" . > /dev/null 2>&1
           else
-            tar --posix -h -I "zstd -T0 -${CLEVEL}" -cvf "$FILENAME" -C "$DIR_NAME" "$BASE_NAME" > /dev/null 2>&1
+            tar --posix -h -I "zstd -T0 -${CLEVEL}" -cvf "$FILENAME" -C "$TAR_SOURCE" . > /dev/null 2>&1
           fi
         fi
 
-        # ✅ FIX — vérifier que l'archive n'est pas vide
         ARCHIVE_SIZE="$(stat -c%s "$FILENAME" 2>/dev/null || echo 0)"
         if [ "$ARCHIVE_SIZE" -lt 1024 ]; then
           echo "::error::Created archive is suspiciously small (${ARCHIVE_SIZE} bytes): $FILENAME"
@@ -134,7 +134,7 @@ runs:
         # ──────────────────────────────────────────────
         echo "::group:: Uploading Assets"
 
-        MAX_SIZE=2000000000  # ~1.86 GiB
+        MAX_SIZE=2000000000
 
         upload_with_retry() {
           local file="$1"
@@ -171,13 +171,11 @@ runs:
           split -b 1500M -a 2 "$FILENAME" "${FILENAME}.part"
 
           for part in "${FILENAME}".part*; do
-            # ✅ FIX — vérifier chaque part avant upload
             PART_SIZE="$(stat -c%s "$part" 2>/dev/null || echo 0)"
             if [ "$PART_SIZE" -lt 1024 ]; then
               echo "::error::Part file suspiciously small (${PART_SIZE} bytes): $part"
               exit 1
             fi
-
             echo "Uploading $part ($(numfmt --to=iec-i --suffix=B "$PART_SIZE"))..."
             if ! upload_with_retry "$part"; then
               echo "::error::Failed to upload part $part after multiple attempts."
