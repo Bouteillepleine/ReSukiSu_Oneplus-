@@ -46,6 +46,7 @@ runs:
         TARGET_REPO: "${{ github.repository }}"
       run: |
         if [ "${{ inputs.debug }}" = "true" ]; then set -x; fi
+        set -u
 
         if [ -n "${{ inputs.working_dir }}" ]; then
           cd "${{ inputs.working_dir }}"
@@ -69,21 +70,43 @@ runs:
         # ──────────────────────────────────────────────
         echo "::group:: Checking Release State"
 
-        git fetch --tags --force
+        git fetch --tags --force || true
 
-        if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
-          echo "Tag '$TAG_NAME' not found. Creating backdated release..."
-          GIT_COMMITTER_DATE="2015-01-01T12:00:00" git tag -a "$TAG_NAME" -m "General Cache Storage"
-          if git push origin "$TAG_NAME" --force; then
-            gh release create "$TAG_NAME" \
-              --title "General Cache" \
-              --notes "Automated storage for build assets" \
-              --repo "$TARGET_REPO" || true
-          else
-            echo "Push failed — tag may have been created by a parallel job. Continuing..."
+        ensure_release_exists() {
+          local tag="$1"
+
+          if gh release view "$tag" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+            echo "Release '$tag' already exists. Ready for upload."
+            return 0
           fi
-        else
-          echo "Release '$TAG_NAME' already exists. Ready for upload."
+
+          echo "Release '$tag' not found. Creating release..."
+
+          if ! git rev-parse "$tag" >/dev/null 2>&1; then
+            GIT_COMMITTER_DATE="2015-01-01T12:00:00" git tag -a "$tag" -m "General Cache Storage" || true
+            git push origin "$tag" --force || true
+          fi
+
+          if gh release create "$tag" \
+              --title "$tag" \
+              --notes "Automated cache storage" \
+              --repo "$TARGET_REPO"; then
+            echo "✅ Release '$tag' created"
+            return 0
+          fi
+
+          if gh release view "$tag" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+            echo "Release '$tag' was created by a parallel job. Continuing."
+            return 0
+          fi
+
+          echo "::warning::Could not create or verify release '$tag'. Cache save skipped."
+          return 1
+        }
+
+        if ! ensure_release_exists "$TAG_NAME"; then
+          echo "::endgroup::"
+          exit 0
         fi
 
         echo "::endgroup::"
@@ -100,33 +123,89 @@ runs:
           exit 0
         fi
 
-        # ✅ FIX — archiver le CONTENU de cache_path (BASE_NAME=".")
-        #          au lieu du dossier wrapper (BASE_NAME=OOS16)
-        #          → l'archive contient directement les fichiers à la racine
-        #          → restore extrait dans cache_path sans wrapper parasite
         TAR_SOURCE="${{ inputs.cache_path }}"
 
-        if [ "${{ inputs.debug }}" = "true" ]; then
-          if [ "$CLEVEL" -eq 0 ]; then
+        if [ -d "$TAR_SOURCE" ]; then
+          FILE_COUNT="$(find "$TAR_SOURCE" -type f 2>/dev/null | wc -l | tr -d ' ')"
+          echo "Files in cache path: $FILE_COUNT"
+
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "⚠️ Cache path contains no files. Skipping cache save."
+            echo "::endgroup::"
+            exit 0
+          fi
+        fi
+
+        if [ "$CLEVEL" -eq 0 ]; then
+          if [ "${{ inputs.debug }}" = "true" ]; then
             tar --posix -h -cvf "$FILENAME" -C "$TAR_SOURCE" .
           else
-            tar --posix -h -I "zstd -T0 -${CLEVEL}" -cvf "$FILENAME" -C "$TAR_SOURCE" .
+            tar --posix -h -cf "$FILENAME" -C "$TAR_SOURCE" .
           fi
         else
-          if [ "$CLEVEL" -eq 0 ]; then
-            tar --posix -h -cvf "$FILENAME" -C "$TAR_SOURCE" . > /dev/null 2>&1
+          if [ "${{ inputs.debug }}" = "true" ]; then
+            tar --posix -h -I "zstd -T0 -${CLEVEL}" -cvf "$FILENAME" -C "$TAR_SOURCE" .
           else
-            tar --posix -h -I "zstd -T0 -${CLEVEL}" -cvf "$FILENAME" -C "$TAR_SOURCE" . > /dev/null 2>&1
+            tar --posix -h -I "zstd -T0 -${CLEVEL}" -cf "$FILENAME" -C "$TAR_SOURCE" .
           fi
         fi
 
         ARCHIVE_SIZE="$(stat -c%s "$FILENAME" 2>/dev/null || echo 0)"
+
         if [ "$ARCHIVE_SIZE" -lt 1024 ]; then
-          echo "::error::Created archive is suspiciously small (${ARCHIVE_SIZE} bytes): $FILENAME"
-          exit 1
+          echo "::warning::Created archive is suspiciously small (${ARCHIVE_SIZE} bytes): $FILENAME. Skipping upload."
+          rm -f "$FILENAME"
+          echo "::endgroup::"
+          exit 0
         fi
 
         echo "Archive created: $FILENAME ($(numfmt --to=iec-i --suffix=B "$ARCHIVE_SIZE"))"
+        echo "::endgroup::"
+
+        # ──────────────────────────────────────────────
+        # PRE-CLEAN OLD ASSETS WITH SAME EXACT KEY
+        # ──────────────────────────────────────────────
+        echo "::group:: Cleaning Existing Cache Assets"
+
+        cleanup_existing_assets() {
+          local exact_base="$1"
+
+          echo "Checking existing assets for exact cache base: $exact_base"
+
+          local assets
+          assets="$(
+            gh release view "$TAG_NAME" \
+              --repo "$TARGET_REPO" \
+              --json assets \
+              --jq '.assets[].name' 2>/dev/null \
+              | awk -v base="$exact_base" '
+                  $0 == base ".tar" { print }
+                  $0 == base ".tzst" { print }
+                  $0 ~ "^" base "\\.tar\\.part[a-z][a-z]$" { print }
+                  $0 ~ "^" base "\\.tzst\\.part[a-z][a-z]$" { print }
+                ' \
+              || true
+          )"
+
+          if [ -z "$assets" ]; then
+            echo "No existing matching assets found."
+            return 0
+          fi
+
+          echo "Existing matching assets to delete:"
+          echo "$assets"
+
+          while IFS= read -r asset; do
+            [ -z "$asset" ] && continue
+            echo "Deleting old asset: $asset"
+            gh release delete-asset "$TAG_NAME" "$asset" \
+              --repo "$TARGET_REPO" \
+              --yes >/dev/null 2>&1 || true
+          done <<< "$assets"
+        }
+
+        cleanup_existing_assets "$BASE_FILENAME"
+
         echo "::endgroup::"
 
         # ──────────────────────────────────────────────
@@ -134,63 +213,89 @@ runs:
         # ──────────────────────────────────────────────
         echo "::group:: Uploading Assets"
 
-        MAX_SIZE=2000000000
+        MAX_SIZE=1500000000
+        SPLIT_SIZE="1000M"
 
         upload_with_retry() {
           local file="$1"
-          local max_attempts=3
+          local max_attempts=5
 
           for ((i=1; i<=max_attempts; i++)); do
-            echo "  Attempt $i: uploading $file..."
+            echo "  Attempt $i/$max_attempts: uploading $file..."
+            echo "  Size: $(numfmt --to=iec-i --suffix=B "$(stat -c%s "$file" 2>/dev/null || echo 0)")"
 
-            if [ "${{ inputs.debug }}" = "true" ]; then
-              if timeout 10m gh release upload "$TAG_NAME" "$file" \
-                  --clobber --repo "$TARGET_REPO"; then
-                echo "  ✅ Uploaded $file"
-                return 0
-              fi
-            else
-              if timeout 10m gh release upload "$TAG_NAME" "$file" \
-                  --clobber --repo "$TARGET_REPO" > /dev/null 2>&1; then
-                echo "  ✅ Uploaded $file"
-                return 0
-              fi
+            if timeout 30m gh release upload "$TAG_NAME" "$file" \
+                --clobber \
+                --repo "$TARGET_REPO"; then
+              echo "  ✅ Uploaded: $file"
+              return 0
             fi
 
-            echo "  ⚠️ Attempt $i failed or timed out. Retrying in 5s..."
-            sleep 5
+            echo "  ⚠️ Attempt $i failed or timed out."
+            echo "  Waiting $((i * 15))s before retry..."
+            sleep $((i * 15))
           done
 
           return 1
         }
 
-        FILE_SIZE="$(stat -c%s "$FILENAME")"
+        FILE_SIZE="$(stat -c%s "$FILENAME" 2>/dev/null || echo 0)"
+        UPLOAD_FAILED=false
 
         if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
-          echo "⚠️ File > 2 GiB ($(numfmt --to=iec-i --suffix=B "$FILE_SIZE")). Splitting..."
-          split -b 1500M -a 2 "$FILENAME" "${FILENAME}.part"
+          echo "⚠️ File > 1.5 GiB ($(numfmt --to=iec-i --suffix=B "$FILE_SIZE")). Splitting into $SPLIT_SIZE parts..."
+
+          split -b "$SPLIT_SIZE" -a 2 "$FILENAME" "${FILENAME}.part"
+
+          PART_COUNT="$(find . -maxdepth 1 -type f -name "${FILENAME}.part*" | wc -l | tr -d ' ')"
+          echo "Created $PART_COUNT part(s)."
+
+          if [ "$PART_COUNT" -eq 0 ]; then
+            echo "::warning::Split produced no parts. Cache save skipped."
+            rm -f "$FILENAME" "${FILENAME}".part* 2>/dev/null || true
+            echo "::endgroup::"
+            exit 0
+          fi
 
           for part in "${FILENAME}".part*; do
+            [ -f "$part" ] || continue
+
             PART_SIZE="$(stat -c%s "$part" 2>/dev/null || echo 0)"
+
             if [ "$PART_SIZE" -lt 1024 ]; then
-              echo "::error::Part file suspiciously small (${PART_SIZE} bytes): $part"
-              exit 1
+              echo "::warning::Part file suspiciously small (${PART_SIZE} bytes): $part"
+              UPLOAD_FAILED=true
+              break
             fi
+
             echo "Uploading $part ($(numfmt --to=iec-i --suffix=B "$PART_SIZE"))..."
+
             if ! upload_with_retry "$part"; then
-              echo "::error::Failed to upload part $part after multiple attempts."
-              exit 1
+              echo "::warning::Failed to upload part $part after multiple attempts. Cache save skipped."
+              UPLOAD_FAILED=true
+              break
             fi
+
             rm -f "$part"
           done
 
-          rm -f "$FILENAME"
+          rm -f "$FILENAME" "${FILENAME}".part* 2>/dev/null || true
+
+          if [ "$UPLOAD_FAILED" = "true" ]; then
+            echo "::warning::Cache upload incomplete. Continuing without saved cache."
+            echo "::endgroup::"
+            exit 0
+          fi
         else
           echo "Uploading $FILENAME ($(numfmt --to=iec-i --suffix=B "$FILE_SIZE"))..."
+
           if ! upload_with_retry "$FILENAME"; then
-            echo "::error::Failed to upload $FILENAME after multiple attempts."
-            exit 1
+            echo "::warning::Failed to upload $FILENAME after multiple attempts. Continuing without saved cache."
+            rm -f "$FILENAME"
+            echo "::endgroup::"
+            exit 0
           fi
+
           rm -f "$FILENAME"
         fi
 
@@ -199,4 +304,5 @@ runs:
           echo "✅ Source deleted after upload: ${{ inputs.cache_path }}"
         fi
 
+        echo "✅ Cache save completed successfully"
         echo "::endgroup::"
