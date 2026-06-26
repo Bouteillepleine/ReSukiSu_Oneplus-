@@ -37,7 +37,7 @@ on:
         default: OOS14+15+16
 
       op_target_model:
-        description: 'Optional: build only one model, e.g. OP12, OP13-CPH, OP-NORD-4, OP12-6.1.118. Leave empty to build all selected.'
+        description: 'Optional exact/prefix model: OP12, OP13-CPH, OP-NORD-4, OP12-6.1.118. Case-sensitive. Empty = all.'
         required: false
         type: string
         default: ''
