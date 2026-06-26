@@ -594,9 +594,6 @@ jobs:
             | join(", ")
           ' matrix.json)"
 
-          estimated_min=$((job_count * 25))
-          estimated_max=$((job_count * 60))
-
           {
             cat << EOF
           ## 🎯 Build Plan
@@ -617,14 +614,6 @@ jobs:
           | **Debug Artifacts** | $debug_display |
           | **ADIOS I/O Scheduler** | $adios_display |
           | **Sync Toolchains** | $mirror_display |
-
-          ---
-
-          ## ⏱️ Estimated Duration
-
-          Estimated total compute time: **${estimated_min}-${estimated_max} minutes**.
-
-          > This is a rough estimate based on \`${job_count}\` job(s). Actual duration depends on runner load, cache hits, kernel source size, LTO mode, and patch complexity.
 
           ---
 
