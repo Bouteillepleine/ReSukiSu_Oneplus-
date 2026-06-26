@@ -556,6 +556,47 @@ jobs:
           adios_display="${{ inputs.enable_adios && '✅ Yes' || '❌ No' }}"
           mirror_display="${{ inputs.mirror_toolchains && '✅ Yes' || '❌ No' }}"
 
+          device_count="${{ steps.set-matrix.outputs.device_count }}"
+          job_count="${{ steps.set-matrix.outputs.count }}"
+
+          oos_breakdown="$(jq -r '
+            sort_by(.os_version)
+            | group_by(.os_version)
+            | map("\(.[0].os_version): \(length)")
+            | join(", ")
+          ' matrix.json)"
+
+          kernel_breakdown="$(jq -r '
+            sort_by(.android_version, .kernel_version)
+            | group_by(.android_version + "-" + .kernel_version)
+            | map("\(.[0].android_version)-\(.[0].kernel_version): \(length)")
+            | join(", ")
+          ' matrix.json)"
+
+          soc_breakdown="$(jq -r '
+            sort_by(.soc)
+            | group_by(.soc)
+            | map("\(.[0].soc): \(length)")
+            | join(", ")
+          ' matrix.json)"
+
+          lto_breakdown="$(jq -r '
+            sort_by(.lto)
+            | group_by(.lto)
+            | map("\(.[0].lto): \(length)")
+            | join(", ")
+          ' matrix.json)"
+
+          susfs_breakdown="$(jq -r '
+            sort_by(.susfs)
+            | group_by(.susfs)
+            | map("\(.[0].susfs): \(length)")
+            | join(", ")
+          ' matrix.json)"
+
+          estimated_min=$((job_count * 25))
+          estimated_max=$((job_count * 60))
+
           {
             cat << EOF
           ## 🎯 Build Plan
@@ -566,8 +607,8 @@ jobs:
           |---|---|
           | **Target Selection** | \`${{ inputs.op_model }}\` |
           | **Target Model Filter** | $target_model_display |
-          | **Selected Devices** | \`${{ steps.set-matrix.outputs.device_count }}\` |
-          | **Build Jobs** | \`${{ steps.set-matrix.outputs.count }}\` |
+          | **Selected Devices** | \`${device_count}\` |
+          | **Build Jobs** | \`${job_count}\` |
           | **ReSukiSU Ref** | $ksu_display |
           | **Build Timestamp** | $build_ts_display |
           | **Optimization** | \`${{ inputs.optimize_level }}\` |
@@ -578,7 +619,15 @@ jobs:
           | **Sync Toolchains** | $mirror_display |
 
           ---
-          
+
+          ## ⏱️ Estimated Duration
+
+          Estimated total compute time: **${estimated_min}-${estimated_max} minutes**.
+
+          > This is a rough estimate based on \`${job_count}\` job(s). Actual duration depends on runner load, cache hits, kernel source size, LTO mode, and patch complexity.
+
+          ---
+
           ## 🧩 SUSFS Resolution
 
           EOF
@@ -635,6 +684,16 @@ jobs:
 
           ## 📦 Selected Build Matrix
 
+          **Jobs:** \`${job_count}\`  
+          **OS breakdown:** \`${oos_breakdown}\`  
+          **Kernel breakdown:** \`${kernel_breakdown}\`  
+          **SoC breakdown:** \`${soc_breakdown}\`  
+          **LTO breakdown:** \`${lto_breakdown}\`  
+          **SUSFS breakdown:** \`${susfs_breakdown}\`
+
+          <details>
+          <summary>📋 Expand full selected build matrix — ${job_count} job(s)</summary>
+
           | # | Model | OS | Kernel | SoC | SUSFS | LTO | Branch |
           |---:|---|---|---|---|---|---|---|
           EOF
@@ -648,6 +707,8 @@ jobs:
           {
             cat << EOF
 
+          </details>
+
           ---
 
           ## ✅ Pre-build Notes
@@ -657,6 +718,27 @@ jobs:
           - This workflow currently enforces **one ReSukiSU configuration per run**.
           EOF
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$job_count" -ge 10 ]; then
+            {
+              echo ""
+              echo "> **⚠️ Large Build Notice:** This run contains \`${job_count}\` build jobs. It may take a long time and consume significant runner minutes."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "${{ inputs.clean_build }}" = "true" ]; then
+            {
+              echo ""
+              echo "> **♻️ Clean Build Notice:** ccache is disabled for this run, so builds may be slower but cleaner."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "${{ inputs.debug }}" = "true" ]; then
+            {
+              echo ""
+              echo "> **🧪 Debug Notice:** Debug artifacts/logs are enabled. Artifact size may be larger."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           if [[ "${{ inputs.op_model }}" == android*-*.* ]]; then
             {
