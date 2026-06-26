@@ -649,7 +649,7 @@ jobs:
           fetch-depth: 1
 
       - name: 🧹 Emergency Disk Cleanup
-        if: ${{ matrix.disk_cleanup }}
+        if: ${{ matrix.disk_cleanup == true }}
         uses: ./.github/actions/disk-cleanup
 
       - name: Install Minimal Dependencies
