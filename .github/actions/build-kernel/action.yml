@@ -138,14 +138,14 @@ runs:
     
     - name: Parse op_config_json
       shell: bash
+      env:
+        OP_CONFIG_JSON_INPUT: ${{ inputs.op_config_json }}
       run: |
         set -euo pipefail
-       
+
         echo "::add-mask::${{ inputs.github_token }}"
 
-        cat > /tmp/config.json <<'JSONEOF'
-        ${{ inputs.op_config_json }}
-        JSONEOF
+        printf '%s\n' "$OP_CONFIG_JSON_INPUT" > /tmp/config.json
 
         jq empty /tmp/config.json
         
@@ -730,6 +730,7 @@ runs:
 
     - name: Check ccache
       shell: bash
+      if: ${{ inputs.clean == false || inputs.clean == 'false' }}
       run: |
         set -euo pipefail
         echo "::group::Check ccache"
@@ -1635,35 +1636,146 @@ runs:
         KERNEL_VERSION="$KERNEL_VER"
         MIN_VERSION="5.16"
 
+        dump_rejects() {
+          local label="${1:-patch}"
+
+          if find . -name "*.rej" -print -quit | grep -q .; then
+            echo "::group::Reject files for ${label}"
+            find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+            echo "::endgroup::"
+          else
+            echo "No .rej files found for ${label}"
+          fi
+        }
+
+        clear_rejects() {
+          find . -name "*.rej" -delete 2>/dev/null || true
+        }
+
+        cleanup_patch_backups() {
+          find . -name "*.orig" -delete 2>/dev/null || true
+        }
+
+        apply_required_patch() {
+          local patch_file="$1"
+          local label="$2"
+          shift 2
+
+          if [ ! -f "$patch_file" ]; then
+            echo "::error::Required patch not found for ${label}: $patch_file"
+            exit 1
+          fi
+
+          echo "Applying required patch: ${label}"
+          clear_rejects
+
+          if ! patch "$@" < "$patch_file"; then
+            echo "::error::Required patch failed: ${label}"
+            dump_rejects "$label"
+            exit 1
+          fi
+
+          clear_rejects
+          echo "✅ Required patch applied: ${label}"
+        }
+
+        apply_optional_patch() {
+          local patch_file="$1"
+          local label="$2"
+          shift 2
+
+          if [ ! -f "$patch_file" ]; then
+            echo "::warning::Optional patch not found for ${label}: $patch_file"
+            return 0
+          fi
+
+          echo "Applying optional patch: ${label}"
+          clear_rejects
+
+          if ! patch "$@" < "$patch_file"; then
+            echo "::warning::Optional patch failed: ${label}. Continuing without it."
+            dump_rejects "$label"
+            clear_rejects
+            return 0
+          fi
+
+          clear_rejects
+          echo "✅ Optional patch applied: ${label}"
+          return 0
+        }
+
         if [ "$(printf '%s\n' "$KERNEL_VERSION" "$MIN_VERSION" | sort -V | head -n1)" = "$KERNEL_VERSION" ]; then
-          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/gki_ptrace.patch"
+          apply_required_patch \
+            "$KERNEL_PATCHES_FOLDER/gki_ptrace.patch" \
+            "gki_ptrace" \
+            -p1 -F 3
         else
           echo "Kernel >= $MIN_VERSION, skipping ptrace patch"
         fi
 
-        if [ "$OP_HMBIRD" = "true" ]; then
+        if [ "${OP_HMBIRD:-false}" = "true" ]; then
+          echo "HMBIRD enabled. Applying HMBIRD compatibility patches."
+
           HMBIRD_MODEL="$(echo "$OP_MODEL" | sed 's/-[0-9]\+\.[0-9]\+\.[0-9]\+$//')"
 
           case "$OP_MODEL" in
-            OP-ACE-5-ULTRA-6.6.50|OP-ACE-5-PRO-6.6.30|OP13-6.6.30|OP13-CPH-6.6.56)
-              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/deprecated" ;;
-            *)
-              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird" ;;
+            OP13-6.6.30)
+              HMBIRD_MODEL="OP13-PJZ"
+              ;;
           esac
 
-          dos2unix "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${OP_OS_VERSION}.patch"
-          patch -p1 -F 3 < "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${OP_OS_VERSION}.patch"
+          case "$OP_MODEL" in
+            OP-ACE-5-ULTRA-6.6.50|OP-ACE-5-PRO-6.6.30|OP13-6.6.30|OP13-CPH-6.6.56)
+              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/deprecated"
+              ;;
+            *)
+              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird"
+              ;;
+          esac
 
-          dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
-          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
+          echo "HMBIRD model: $HMBIRD_MODEL"
+          echo "HMBIRD patch dir: $FENGCHI_DIR"
 
-          chmod +x ./drivers/of/overwriter/overwrite_configs/convert_configs.sh || true
+          FENGCHI_PATCH="$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${OP_OS_VERSION}.patch"
+          OVERWRITER_PATCH="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
+          HMBIRD_CONFIG_PATCH="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
 
-          dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
-          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
+          if [ -f "$FENGCHI_PATCH" ]; then
+            dos2unix "$FENGCHI_PATCH" || true
+          fi
+
+          apply_optional_patch \
+            "$FENGCHI_PATCH" \
+            "hmbird fengchi ${HMBIRD_MODEL} ${OP_OS_VERSION}" \
+            -p1 -F 3
+
+          if [ -f "$OVERWRITER_PATCH" ]; then
+            dos2unix "$OVERWRITER_PATCH" || true
+          fi
+
+          apply_optional_patch \
+            "$OVERWRITER_PATCH" \
+            "hmbird overwriter" \
+            -p1 -F 3
+
+          chmod +x ./drivers/of/overwriter/overwrite_configs/convert_configs.sh 2>/dev/null || true
+
+          if [ -f "$HMBIRD_CONFIG_PATCH" ]; then
+            dos2unix "$HMBIRD_CONFIG_PATCH" || true
+          fi
+
+          apply_optional_patch \
+            "$HMBIRD_CONFIG_PATCH" \
+            "hmbird config" \
+            -p1 -F 3
+
+          echo "✅ HMBIRD patch phase completed"
         else
-          echo "Hmbird not enabled, skipping fengchi patch"
+          echo "HMBIRD not enabled, skipping fengchi patch"
         fi
+
+        clear_rejects
+        cleanup_patch_backups
 
         echo "✅ Other patches applied"
         echo "::endgroup::"
@@ -2028,18 +2140,25 @@ runs:
         set +u
         source "$KERNEL_PLATFORM_FOLDER/build/kernel/_setup_env.sh" 2>/dev/null || true
         set -u
-        
+
         if [[ ! "${NPROC:-}" =~ ^[1-9][0-9]*$ ]]; then
           echo "::warning::NPROC not set or invalid ('${NPROC:-}'), falling back to nproc --all"
           NPROC="$(nproc --all)"
         fi
+
         echo "Build parallelism: $NPROC threads"
+
+        LTO_JOBS="$NPROC"
+        if [ "$LTO_JOBS" -gt 8 ]; then
+          LTO_JOBS=8
+        fi
+        export LTO_JOBS
 
         cat > "$COMMON_KERNEL_FOLDER/ld-wrapper" <<'EOF'
         #!/bin/bash
         exec ld.lld "$@" \
           --thinlto-cache-dir="${LDCACHE_DIR}" \
-          --thinlto-jobs="${NPROC}"
+          --thinlto-jobs="${LTO_JOBS}"
         EOF
         chmod +x "$COMMON_KERNEL_FOLDER/ld-wrapper"
 
@@ -2070,11 +2189,6 @@ runs:
         echo "Build user:        $KBUILD_BUILD_USER"
         echo "Build host:        $KBUILD_BUILD_HOST"
 
-        export CC="ccache clang"
-        export CXX="ccache clang++"
-        export HOSTCC="ccache clang"
-        export HOSTCXX="ccache clang++"
-
         sanitize_ccache_env() {
           unset CCACHE_DEPEND          || true
           unset CCACHE_READONLY_DIRECT || true
@@ -2094,16 +2208,31 @@ runs:
           export CCACHE_IGNOREOPTIONS="--sysroot*"
         }
 
-        sanitize_ccache_env
-
-        if env | grep -q '^CCACHE_DEPEND='; then
-          echo "::error::CCACHE_DEPEND is still set during build"
-          exit 1
+        if [ "${{ inputs.clean }}" = "true" ]; then
+          echo "Clean build requested: disabling ccache wrappers"
+          export CC="clang"
+          export CXX="clang++"
+          export HOSTCC="clang"
+          export HOSTCXX="clang++"
+        else
+          echo "ccache build enabled"
+          export CC="ccache clang"
+          export CXX="ccache clang++"
+          export HOSTCC="ccache clang"
+          export HOSTCXX="ccache clang++"
+          sanitize_ccache_env
         fi
 
-        if env | grep -q '^CCACHE_READONLY_DIRECT='; then
-          echo "::error::CCACHE_READONLY_DIRECT is still set during build"
-          exit 1
+        if [ "${{ inputs.clean }}" != "true" ]; then
+          if env | grep -q '^CCACHE_DEPEND='; then
+            echo "::error::CCACHE_DEPEND is still set during build"
+            exit 1
+          fi
+
+          if env | grep -q '^CCACHE_READONLY_DIRECT='; then
+            echo "::error::CCACHE_READONLY_DIRECT is still set during build"
+            exit 1
+          fi
         fi
 
         OUT=out
@@ -2114,28 +2243,42 @@ runs:
         echo "============================================"
         echo "which clang: $(which clang)"
         clang --version 2>&1 | head -n1 || true
-        echo ""
-        echo "ccache configuration:"
-        sanitize_ccache_env
-        ccache -p | grep -E "(compression|direct_mode|read_only_direct|readonly_direct|depend|sloppiness|file_clone|inode_cache)" || true
+        echo "CC:      $CC"
+        echo "CXX:     $CXX"
+        echo "HOSTCC:  $HOSTCC"
+        echo "HOSTCXX: $HOSTCXX"
 
-        if env | grep -q '^CCACHE_DEPEND='; then
-          echo "::error::CCACHE_DEPEND is still set during ccache verification"
-          exit 1
+        if [ "${{ inputs.clean }}" != "true" ]; then
+          echo ""
+          echo "ccache configuration:"
+          sanitize_ccache_env
+          ccache -p | grep -E "(compression|direct_mode|read_only_direct|readonly_direct|depend|sloppiness|file_clone|inode_cache)" || true
+
+          if env | grep -q '^CCACHE_DEPEND='; then
+            echo "::error::CCACHE_DEPEND is still set during ccache verification"
+            exit 1
+          fi
+
+          if env | grep -q '^CCACHE_READONLY_DIRECT='; then
+            echo "::error::CCACHE_READONLY_DIRECT is still set during ccache verification"
+            exit 1
+          fi
+
+          echo ""
+          echo "ccache pre-build stats:"
+          sanitize_ccache_env
+          ccache -s | head -n 30 || true
+        else
+          echo ""
+          echo "ccache: disabled for clean build"
         fi
 
-        if env | grep -q '^CCACHE_READONLY_DIRECT='; then
-          echo "::error::CCACHE_READONLY_DIRECT is still set during ccache verification"
-          exit 1
-        fi
-
-        echo ""
-        echo "ccache pre-build stats:"
-        sanitize_ccache_env
-        ccache -s | head -n 30 || true
         echo "============================================"
 
-        sanitize_ccache_env
+        if [ "${{ inputs.clean }}" != "true" ]; then
+          sanitize_ccache_env
+        fi
+
         make \
           LD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
           HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
@@ -2198,7 +2341,10 @@ runs:
           scripts/config --file "$OUT/.config" -d "$sym" 2>/dev/null || true
         done
 
-        sanitize_ccache_env
+        if [ "${{ inputs.clean }}" != "true" ]; then
+          sanitize_ccache_env
+        fi
+
         make \
           LD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
           HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
@@ -2212,30 +2358,37 @@ runs:
         echo "Build Configuration"
         echo "============================================"
         echo "Device:       ${OP_MODEL}"
-        echo "Kernel:       ${KERNEL_FULL_VER}"        
+        echo "Kernel:       ${KERNEL_FULL_VER}"
         echo "Threads:      ${NPROC}"
+        echo "LTO jobs:     ${LTO_JOBS}"
         echo "Optimization: ${{ inputs.optimize_level }}"
         echo "LTO:          $OP_LTO"
+        echo "Clean build:  ${{ inputs.clean }}"
         echo "Timestamp:    $KBUILD_BUILD_TIMESTAMP"
         echo "KCFLAGS:      ${KCFLAGS:0:180}..."
         echo "KCPPFLAGS:    ${KCPPFLAGS:0:180}..."
         echo "============================================"
 
         echo "Running make prepare for cache warm-up..."
-        sanitize_ccache_env
+
+        if [ "${{ inputs.clean }}" != "true" ]; then
+          sanitize_ccache_env
+        fi
+
         make \
           LD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
           HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
           O="$OUT" \
           prepare 2>&1 | tail -n 10 || true
 
-        sanitize_ccache_env
-
         BUILD_START="$(date +%s)"
         set -o pipefail
-        
+
         run_make() {
-          sanitize_ccache_env
+          if [ "${{ inputs.clean }}" != "true" ]; then
+            sanitize_ccache_env
+          fi
+
           make \
             LD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
             HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
@@ -2285,12 +2438,18 @@ runs:
         echo "✅ Build completed"
         echo "   Duration: $((BUILD_TIME / 60))m $((BUILD_TIME % 60))s"
         echo "   Threads:  ${NPROC}"
+        echo "   LTO jobs: ${LTO_JOBS}"
         echo "   Image:    $(numfmt --to=iec-i --suffix=B "$IMG_SIZE")"
 
-        echo ""
-        echo "ccache post-build stats:"
-        sanitize_ccache_env
-        ccache -s || true
+        if [ "${{ inputs.clean }}" != "true" ]; then
+          echo ""
+          echo "ccache post-build stats:"
+          sanitize_ccache_env
+          ccache -s || true
+        else
+          echo ""
+          echo "ccache: disabled for clean build"
+        fi
 
         echo "::endgroup::"
 
@@ -2857,6 +3016,22 @@ runs:
         github_token: ${{ inputs.github_token }}
         working_dir: "./main-source"
         compression_level: 1
+
+    - name: 📤 Upload failure logs
+      if: ${{ failure() }}
+      continue-on-error: true
+      uses: actions/upload-artifact@v7
+      with:
+        name: failure_logs_${{ env.OP_MODEL }}_${{ env.OP_OS_VERSION }}_${{ env.KERNEL_FULL_VER }}
+        path: |
+          ${{ env.COMMON_KERNEL_FOLDER }}/build.log
+          ${{ env.COMMON_KERNEL_FOLDER }}/install.log
+          ${{ env.COMMON_KERNEL_FOLDER }}/out/.config
+          ${{ env.COMMON_KERNEL_FOLDER }}/out/include/generated/autoconf.h
+          /tmp/susfs_patch_${{ env.OP_MODEL }}_${{ env.KERNEL_FULL_VER }}.log
+          /tmp/adios_patch.log
+        if-no-files-found: ignore
+        retention-days: 14
 
     - name: 🧹 Cleanup on failure
       if: ${{ failure() }}
