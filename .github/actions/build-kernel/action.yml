@@ -220,6 +220,7 @@ runs:
         ds="${OP_DS:-}"
         ntsync="${OP_NTSYNC:-}"
         optimize='${{ inputs.optimize_level }}'
+        build_timestamp='${{ inputs.build_timestamp }}'
 
         errors=()
 
@@ -302,6 +303,12 @@ runs:
           O2|O3) ;;
           *) errors+=("optimize_level must be O2 or O3. Got: '$optimize'") ;;
         esac
+
+        if [[ -n "$build_timestamp" ]]; then
+          if ! date -u -d "$build_timestamp" >/dev/null 2>&1; then
+            errors+=("build_timestamp is not parseable by GNU date. Got: '$build_timestamp'")
+          fi
+        fi
 
         if [ ${#errors[@]} -ne 0 ]; then
           echo "Found ${#errors[@]} validation error(s):" >&2
