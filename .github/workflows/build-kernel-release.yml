@@ -122,7 +122,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
-      device_count: ${{ steps.set-matrix.outputs.count }}
+      device_count: ${{ steps.set-matrix.outputs.device_count }}
+      job_count: ${{ steps.set-matrix.outputs.count }}
       active_gki_keys: ${{ steps.set-matrix.outputs.active_gki_keys }}
       susfs_hash_android12_5_10: ${{ steps.set-matrix.outputs.susfs_hash_android12_5_10 }}
       susfs_hash_android13_5_15: ${{ steps.set-matrix.outputs.susfs_hash_android13_5_15 }}
@@ -132,6 +133,7 @@ jobs:
       ksu_resolved_hash: ${{ steps.set-matrix.outputs.ksu_resolved_hash }}
       ksu_options_normalized: ${{ steps.set-matrix.outputs.ksu_options_normalized }}
       susfs_base_version: ${{ steps.set-matrix.outputs.susfs_base_version }}
+
     env:
       GH_TOKEN: ${{ github.token }}
       GH_HTTP_TIMEOUT: 600
@@ -177,6 +179,14 @@ jobs:
           fi
 
           echo "ksu_options_normalized=$ksu_options_normalized" >> "$GITHUB_OUTPUT"
+
+          ksu_count="$(echo "$ksu_options_normalized" | jq 'length')"
+
+          if [ "$ksu_count" -ne 1 ]; then
+            echo "::error::Only one ReSukiSU option is currently supported. Got $ksu_count entries."
+            echo "::error::Please use exactly one entry, for example: [{\"type\":\"rsksu\",\"hash\":\"main\"}]"
+            exit 1
+          fi
 
           ksu_type=$(echo "$ksu_options_normalized" | jq -r '.[0].type')
           ksu_ref=$(echo "$ksu_options_normalized" | jq -r '.[0].hash')
@@ -251,7 +261,7 @@ jobs:
             echo "ℹ️  No target model selected. Building all configs matching op_model='$input'."
           fi
 
-          count=$(jq 'length' <<< "$filtered")
+          device_count=$(jq 'length' <<< "$filtered")
 
           filtered=$(echo "$filtered" | jq '
             sort_by(
@@ -260,7 +270,7 @@ jobs:
             )
           ')
 
-          if [ "$count" -eq 0 ]; then
+          if [ "$device_count" -eq 0 ]; then
             echo "::error::No config files found for op_model='$input' and op_target_model='${target_model:-<empty>}' after applying filters!"
             echo ""
             echo "Available configurations:"
@@ -285,7 +295,8 @@ jobs:
           echo "Selected devices:"
           jq -r '.[] | "  - \(.model) (\(.os_version), \(.android_version)-\(.kernel_version), \(.ksu_type) - \(.ksu_hash))"' <<< "$merged_matrix"
 
-          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "count=$final_count" >> "$GITHUB_OUTPUT"
+          echo "device_count=$device_count" >> "$GITHUB_OUTPUT"
 
           KSU_REPO_OWNER="ReSukiSU"
           KSU_REPO_NAME="ReSukiSU"
@@ -539,7 +550,8 @@ jobs:
 
           **Target:** ${{ inputs.op_model }}  
           **Target Model:** $target_model_display  
-          **Devices:** ${{ steps.set-matrix.outputs.count }}  
+          **Devices:** ${{ steps.set-matrix.outputs.device_count }}  
+          **Build Jobs:** ${{ steps.set-matrix.outputs.count }}  
 
           **Configuration:**
           EOF
@@ -779,10 +791,9 @@ jobs:
               echo "CCACHE_LOGFILE=$CCACHE_LOG" >> "$GITHUB_ENV"
             fi
 
-            if ccache --help 2>&1 | grep -q 'depend_mode'; then
-              export CCACHE_DEPEND=true
-              echo "CCACHE_DEPEND=true" >> "$GITHUB_ENV"
-            fi
+            # Do not enable CCACHE_DEPEND here.
+            # The build-kernel composite action explicitly sanitizes and rejects depend mode
+            # to keep direct-mode cache behavior predictable across kernel builds.
 
             echo "✅ ccache configured successfully"
             ccache -p
@@ -825,7 +836,7 @@ jobs:
           echo "Kernel: ${{ matrix.android_version }}-${{ matrix.kernel_version }}"
           echo "Timestamp: ${{ steps.build.outputs.build_timestamp }}"
 
-          if [ "${{ matrix.susfs }}" = true ]; then
+          if [ "${{ matrix.susfs }}" = "true" ]; then
             echo "SUSFS Hash: ${{ matrix.susfs_resolved_hash }}"
           fi
 
@@ -841,7 +852,7 @@ jobs:
             echo "  - Timestamp: ${{ steps.build.outputs.build_timestamp }}"
             echo "rsksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
 
-            if [ "${{ matrix.susfs }}" = true ]; then
+            if [ "${{ matrix.susfs }}" = "true" ]; then
               echo "  - SUSFS: ${{ steps.build.outputs.susfs_version }}"
             fi
 
@@ -876,7 +887,7 @@ jobs:
           **ADIOS I/O Scheduler:** \`${{ inputs.enable_adios }}\`
           EOF
 
-          if [ "${{ matrix.susfs }}" = true ]; then
+          if [ "${{ matrix.susfs }}" = "true" ]; then
             cat >> "$GITHUB_STEP_SUMMARY" << EOF
           **SUSFS Hash:** \`${{ matrix.susfs_resolved_hash }}\`
           EOF
@@ -892,7 +903,7 @@ jobs:
           | **Build Timestamp** | \`${{ steps.build.outputs.build_timestamp }}\` |
           EOF
 
-            if [ "${{ matrix.susfs }}" = true ]; then
+            if [ "${{ matrix.susfs }}" = "true" ]; then
               cat >> "$GITHUB_STEP_SUMMARY" << EOF
           | **SUSFS** | ${{ steps.build.outputs.susfs_version }} |
           EOF
