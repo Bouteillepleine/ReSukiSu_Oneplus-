@@ -118,7 +118,7 @@ on:
         default: ''
 
 jobs:
-  set-op-model:
+    set-op-model:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
@@ -178,7 +178,11 @@ jobs:
             exit 1
           fi
 
-          echo "ksu_options_normalized=$ksu_options_normalized" >> "$GITHUB_OUTPUT"
+          {
+            echo "ksu_options_normalized<<EOF"
+            echo "$ksu_options_normalized"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
           ksu_count="$(echo "$ksu_options_normalized" | jq 'length')"
 
@@ -277,8 +281,6 @@ jobs:
             jq -r '.[] | "  - \(.model) (\(.os_version), \(.android_version)-\(.kernel_version))"' matrix.json
             exit 1
           fi
-
-          echo "$filtered" | jq '.' > matrix.json
 
           merged_matrix=$(jq -n --argjson devices "$filtered" --argjson ksu_list "$ksu_options_normalized" '
             [
@@ -505,6 +507,8 @@ jobs:
             )
           ')
 
+          echo "$merged_matrix" | jq '.' > matrix.json
+
           wrapped=$(jq -n --argjson items "$merged_matrix" '{ include: $items }')
           echo "matrix=$(jq -c . <<< "$wrapped")" >> "$GITHUB_OUTPUT"
 
@@ -521,6 +525,8 @@ jobs:
       - name: 📊 Build plan summary
         shell: bash
         run: |
+          set -euo pipefail
+
           ksu_type="${{ fromJSON(steps.set-matrix.outputs.ksu_options_normalized)[0].type }}"
           ksu_ref="${{ fromJSON(steps.set-matrix.outputs.ksu_options_normalized)[0].hash }}"
 
@@ -625,15 +631,17 @@ jobs:
       - set-op-model
       - mirror_toolchain
     if: |
+      always() &&
       !cancelled() &&
       needs.set-op-model.result == 'success' &&
-      (needs.mirror_toolchain.result == 'success' || needs.mirror_toolchain.result == 'skipped')
+      contains(fromJSON('["success","skipped"]'), needs.mirror_toolchain.result)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.set-op-model.outputs.matrix) }}
     outputs:
       rsksu_ver: ${{ steps.build-stat.outputs.rsksu_ver }}
+
     steps:
       - name: 📥 Checkout Code
         uses: actions/checkout@v6
@@ -935,6 +943,7 @@ jobs:
         if: always()
         shell: bash
         run: |
+          set -euo pipefail
           echo "::group::Cleanup"
 
           sudo rm -rf "$GITHUB_WORKSPACE/out" || true
@@ -946,14 +955,14 @@ jobs:
           if command -v ccache >/dev/null 2>&1; then
             echo ""
             echo "📊 ccache statistics after build:"
-            ccache -s
+            ccache -s || true
             echo ""
             echo "💾 ccache preserved for next build"
           fi
 
           echo ""
           echo "💽 Final disk usage:"
-          df -h /
+          df -h / || true
 
           echo "::endgroup::"
 
