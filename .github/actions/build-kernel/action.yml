@@ -1167,7 +1167,7 @@ runs:
             echo "ℹ️ Skipping KernelSU folder patch for ReSukiSU"
             ;;
           unknown)
-            echo "Warning: Could not detect SUSFS version. Continuing because patch file exists."
+            echo "::warning::Could not detect SUSFS version. Continuing because patch file exists."
             ;;
           *)
             echo "::error::Unsupported SUSFS version: $SUSVER"
@@ -1258,8 +1258,19 @@ runs:
         fake_patched_expand=0
 
         if [ "$KMI" = "android15-6.6" ]; then
+          if [ -f "./fs/namespace.c" ] && ! grep -qF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
+            echo "Adding missing trace/hooks/fs.h include for android15-6.6"
+            if grep -qF '#include <trace/hooks/blk.h>' ./fs/namespace.c; then
+              sed -i '/#include <trace\/hooks\/blk\.h>/a #include <trace/hooks/fs.h>' ./fs/namespace.c
+            elif grep -qF '#include "internal.h"' ./fs/namespace.c; then
+              sed -i '/#include "internal.h"/a #include <trace/hooks/fs.h>' ./fs/namespace.c
+            else
+              sed -i '1i#include <trace/hooks/fs.h>' ./fs/namespace.c
+            fi
+          fi
+
           if [ -f "./fs/proc/task_mmu.c" ] && ! grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
-            echo "nr_subpages not found, applying patch compatibility fix"
+            echo "nr_subpages not found, applying android15-6.6 SUSFS compatibility fake patch"
 
             sed -i \
               -e '/int ret = 0, copied = 0;/a \\tunsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;' \
@@ -1270,21 +1281,21 @@ runs:
           fi
 
           if [ -f "./fs/proc/base.c" ] && ! grep -qxF '#include <linux/dma-buf.h>' ./fs/proc/base.c; then
-            echo "#include <linux/dma-buf.h> not found, adding missing header file"
+            echo "#include <linux/dma-buf.h> not found, adding missing header"
             sed -i '/#include <linux\/cpufreq_times.h>/a #include <linux\/dma-buf.h>' ./fs/proc/base.c
           fi
 
           if [ -f "./mm/memory.c" ] && ! grep -qxF '#include <linux/zswap.h>' ./mm/memory.c; then
-            echo "#include <linux/zswap.h> not found, adding missing header file"
+            echo "#include <linux/zswap.h> not found, adding missing header"
             sed -i '/#include <linux\/sched\/sysctl\.h>/a #include <linux\/zswap.h>' ./mm/memory.c
             fake_patched_swap=1
           fi
 
           if [ -f "./fs/proc/task_mmu.c" ] \
             && grep -qF 'if (vma->vm_end > last_vma_end)' ./fs/proc/task_mmu.c \
-            && ! grep -qF 'if (vma->vm_end > last_vma_end) {' ./fs/proc/task_mmu.c; then
+            && ! grep -qF 'SUSFS_IS_INODE_SUS_MAP' ./fs/proc/task_mmu.c; then
 
-            echo "Temporarily expanding the last_vma_end if block to fix matching issues"
+            echo "Temporarily expanding last_vma_end block to fix android15-6.6 SUSFS matching"
 
             perl -i -0pe \
               's/\t\t\tif \(vma->vm_end > last_vma_end\)\n\t\t\t\tsmap_gather_stats\(vma, \&mss, last_vma_end\);/\t\t\tif (vma->vm_end > last_vma_end) {\n\t\t\t\tsmap_gather_stats(vma, \&mss, last_vma_end);\n\t\t\t\tlast_vma_end = vma->vm_end;\n\t\t\t}/' \
@@ -1301,7 +1312,7 @@ runs:
           fi
 
           if [ -f "./fs/proc/base.c" ] && ! grep -qxF '#include <linux/dma-buf.h>' ./fs/proc/base.c; then
-            echo "#include <linux/dma-buf.h> not found, adding missing header file"
+            echo "#include <linux/dma-buf.h> not found, adding missing header"
             sed -i '/#include <linux\/cpufreq_times.h>/a #include <linux\/dma-buf.h>' ./fs/proc/base.c
           fi
         fi
@@ -1459,7 +1470,12 @@ runs:
 
         if [ "$fake_patched_expand" = 1 ]; then
           if [ "$KMI" = "android15-6.6" ]; then
-            if [ -f "./fs/proc/task_mmu.c" ] && grep -qF 'if (vma->vm_end > last_vma_end) {' ./fs/proc/task_mmu.c; then
+            if [ -f "./fs/proc/task_mmu.c" ] \
+              && grep -qF 'if (vma->vm_end > last_vma_end) {' ./fs/proc/task_mmu.c \
+              && ! grep -qF 'SUSFS_IS_INODE_SUS_MAP' ./fs/proc/task_mmu.c; then
+
+              echo "Reverting temporary last_vma_end expansion"
+
               perl -i -0pe \
                 's/\t\t\tif \(vma->vm_end > last_vma_end\) \{\n\t\t\t\tsmap_gather_stats\(vma, \&mss, last_vma_end\);\n\t\t\t\tlast_vma_end = vma->vm_end;\n\t\t\t\}/\t\t\tif (vma->vm_end > last_vma_end)\n\t\t\t\tsmap_gather_stats(vma, \&mss, last_vma_end);/' \
                 ./fs/proc/task_mmu.c
@@ -1470,6 +1486,7 @@ runs:
         if [ "$fake_patched" = 1 ]; then
           if [ "$KMI" = "android15-6.6" ]; then
             if [ -f "./fs/proc/task_mmu.c" ] && grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
+              echo "Reverting temporary nr_subpages fake patch"
               sed -i \
                 -e '/unsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;/d' \
                 -e '/pagemap_entry_t \*res = NULL;/d' \
@@ -1495,6 +1512,7 @@ runs:
         if [ "$fake_patched_swap" = 1 ]; then
           if [ "$KMI" = "android15-6.6" ]; then
             if [ -f "./mm/memory.c" ] && grep -qxF '#include <linux/zswap.h>' ./mm/memory.c; then
+              echo "Reverting temporary zswap include"
               sed -i '/#include <linux\/zswap\.h>/d' ./mm/memory.c
             fi
           fi
@@ -1512,6 +1530,22 @@ runs:
             echo "::endgroup::"
           done <<< "$REJECT_FILES"
           exit 1
+        fi
+
+        if [ "$KMI" = "android15-6.6" ]; then
+          echo "Verifying android15-6.6 SUSFS markers"
+
+          echo "::group::task_mmu.c SUSFS markers"
+          grep -nE 'SUSFS|SUS_MAP|SUSFS_IS_INODE_SUS_MAP|last_vma_end|nr_subpages' ./fs/proc/task_mmu.c | head -n 120 || true
+          echo "::endgroup::"
+
+          echo "::group::memory.c SUSFS markers"
+          grep -nE 'SUSFS|SUS_MAP|susfs_def' ./mm/memory.c | head -n 120 || true
+          echo "::endgroup::"
+
+          echo "::group::namespace.c SUSFS markers"
+          grep -nE 'SUSFS|susfs|CL_COPY_MNT_NS|trace/hooks/fs' ./fs/namespace.c | head -n 120 || true
+          echo "::endgroup::"
         fi
 
         echo "✅ SUSFS patches applied"
