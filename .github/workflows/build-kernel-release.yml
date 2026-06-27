@@ -1554,7 +1554,7 @@ jobs:
           ksu_display="$(ksu_display_value "$ksu_ref" "$ksu_resolved_hash")"
 
           cat << EOF > release_notes.md
-          # 📱 OnePlus Kernels • OOS/COS • ReSukiSU • SUSFS ${SUSFS_BASE_VERSION}
+          # 📱 OOS/COS • ReSukiSU • SUSFS ${SUSFS_BASE_VERSION}
 
           Flashable AnyKernel3 ZIPs for supported OnePlus devices.
 
