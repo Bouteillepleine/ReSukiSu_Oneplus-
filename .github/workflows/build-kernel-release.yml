@@ -107,6 +107,52 @@ on:
         type: boolean
         default: false
 
+      enable_hmbird:
+        description: 'Enable HMBIRD. CPU scheduler modification for processing heavy use tasks (e.g., gaming), but can cause instability. WARNING: ONLY FOR SM8750/MT6991 DEVICES! (OP13, OP13T, OP13S, OP-TURBO-6, OP-PAD-3-SM8750, OP-PAD-2-PRO, OP-PAD-2-MT6991, OP-NORD-6, OP-ACE-6, OP-ACE-5-ULTRA, OP-ACE-5-PRO)'
+        type: boolean
+        default: false
+      
+      enable_ds:
+        description: 'Enable Droidspace. Support for portable containers running full Linux environments.'
+        type: boolean
+        default: false
+
+      enable_ntsync:
+        description: 'Enable NTSync. High-performance, low-latency synchronization primitives compatible with the Windows NT kernel API. Useful for multithreading on Wine/Proton compatiblity layers (gaming emulators like Winlator).'
+        type: boolean
+        default: false
+
+      enable_bbg:
+        description: 'Enables Baseband Guard (BBG). Prevents writing to critical device partitions for protection.'
+        type: boolean
+        default: false
+
+      enable_bbr:
+        description: 'Enables BBR. TCP congestion algorithm for improving throughput and preventing connection lag on high-latency or lossy networks (like crowded 5G or weak Wi-Fi). But increases CPU overhead.' 
+        type: boolean
+        default: true
+
+      enable_ttl:
+        description: 'Enables TTL. Network packet manipulation. Bypass carrier mobile hotspot/tethering data caps.'
+        type: boolean
+        default: true
+
+      enable_ipset:
+        description: 'Enables IPSet. Advanced firewall capabilities.'
+        type: boolean
+        default: true
+
+      enable_unicode:
+        description: 'Enable Unicode Bypass Fix. Prevent path traversal and other detections using non-printable Unicode codepoints.'
+        type: boolean
+        default: true
+
+      enable_susfs:
+        description: "Enables SuSFS implementation. If no, ignore branch selections below."
+        required: true
+        type: boolean
+        default: true
+
       android12-5_10_susfs_branch_or_commit:
         description: 'Enter SusFS Branch or commit hash for android12-5.10'
         required: false
@@ -327,6 +373,30 @@ jobs:
           else
             echo "ℹ️ No target model selected. Building all configs matching op_model='$input'."
           fi
+          
+          echo "🔄 Overriding configuration features with manual workflow inputs..."
+          filtered="$(echo "$filtered" | jq -c \
+            --arg hmbird "${{ github.event.inputs.enable_hmbird }}" \
+            --arg ds "${{ github.event.inputs.enable_ds }}" \
+            --arg ntsync "${{ github.event.inputs.enable_ntsync }}" \
+            --arg bbg "${{ github.event.inputs.enable_bbg }}" \
+            --arg bbr "${{ github.event.inputs.enable_bbr }}" \
+            --arg ttl "${{ github.event.inputs.enable_ttl }}" \
+            --arg ip_set "${{ github.event.inputs.enable_ipset }}" \
+            --arg unicode "${{ github.event.inputs.enable_unicode }}" \
+            --arg susfs "${{ github.event.inputs.enable_susfs }}" \
+            'map(. + {
+              hmbird: ($hmbird == "true"),
+              ds: ($ds == "true"),
+              ntsync: ($ntsync == "true"),
+              bbg: ($bbg == "true"),
+              bbr: ($bbr == "true"),
+              ttl: ($ttl == "true"),
+              ip_set: ($ip_set == "true"),
+              unicode: ($unicode == "true"),
+              susfs: ($susfs == "true")
+            })'
+          )"
 
           device_count="$(jq 'length' <<< "$filtered")"
 
