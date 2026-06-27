@@ -1299,7 +1299,10 @@ jobs:
 
           echo ""
           echo "Selected matrix:"
-          jq -r '.[] | "  - \(.model) \(.os_version) \(.android_version)-\(.kernel_version)\(if (.kernel_full_version? // "") != "" then " full=\(.kernel_full_version)" else "" end)"' "$MATRIX_FILE"
+          jq -r '
+            .[]
+            | "  - \(.model) \(.os_version) \(.android_version)-\(.kernel_version)\(if (.kernel_full_version? // "") != "" then " full=\(.kernel_full_version)" else "" end)"
+          ' "$MATRIX_FILE"
 
           mapfile -t ALL_AK3_ZIPS < <(find ./downloaded-artifacts -name "AK3_*.zip" -type f | sort)
 
@@ -1364,25 +1367,28 @@ jobs:
               --arg os "$os_version" \
               --arg zip_kernel "$zip_kernel" '
                 any(.[]?;
-                  (
-                    .model == $model
-                    or (.model | startswith($model + "-"))
-                    or ($model | startswith(.model + "-"))
-                  )
-                  and .os_version == $os
-                  and (
-                    ((.android_version + "-" + .kernel_version) == $zip_kernel)
+                  . as $row
+                  | (
+                      (
+                        $row.model == $model
+                        or ($row.model | startswith($model + "-"))
+                        or ($model | startswith($row.model + "-"))
+                      )
+                      and $row.os_version == $os
+                      and (
+                        (($row.android_version + "-" + $row.kernel_version) == $zip_kernel)
 
-                    or (
-                      $zip_kernel
-                      | startswith((.android_version + "-" + .kernel_version) + ".")
-                    )
+                        or (
+                          $zip_kernel
+                          | startswith(($row.android_version + "-" + $row.kernel_version) + ".")
+                        )
 
-                    or (
-                      (.kernel_full_version? // "") != ""
-                      and ((.android_version + "-" + .kernel_full_version) == $zip_kernel)
+                        or (
+                          ($row.kernel_full_version? // "") != ""
+                          and (($row.android_version + "-" + $row.kernel_full_version) == $zip_kernel)
+                        )
+                      )
                     )
-                  )
                 )
               ' "$MATRIX_FILE" >/dev/null
           }
@@ -1419,7 +1425,10 @@ jobs:
             echo "::error::No release ZIPs matched the selected matrix."
             echo ""
             echo "Selected matrix:"
-            jq -r '.[] | "  - \(.model) \(.os_version) \(.android_version)-\(.kernel_version)\(if (.kernel_full_version? // "") != "" then " full=\(.kernel_full_version)" else "" end)"' "$MATRIX_FILE"
+            jq -r '
+              .[]
+              | "  - \(.model) \(.os_version) \(.android_version)-\(.kernel_version)\(if (.kernel_full_version? // "") != "" then " full=\(.kernel_full_version)" else "" end)"
+            ' "$MATRIX_FILE"
             echo ""
             echo "ZIPs found:"
             printf '  - %s\n' "${ALL_AK3_ZIPS[@]##*/}"
@@ -1561,24 +1570,25 @@ jobs:
               --arg os "$os_version" \
               --arg zip_kernel "$zip_kernel" '
                 .[]?
+                | . as $row
                 | select(
                     (
-                      .model? == $model
-                      or (.model? | startswith($model + "-"))
-                      or ($model | startswith((.model? // "") + "-"))
+                      $row.model? == $model
+                      or ($row.model? | startswith($model + "-"))
+                      or ($model | startswith(($row.model? // "") + "-"))
                     )
-                    and .os_version? == $os
+                    and $row.os_version? == $os
                     and (
-                      ((.android_version? + "-" + .kernel_version?) == $zip_kernel)
+                      (($row.android_version? + "-" + $row.kernel_version?) == $zip_kernel)
 
                       or (
                         $zip_kernel
-                        | startswith((.android_version? + "-" + .kernel_version?) + ".")
+                        | startswith(($row.android_version? + "-" + $row.kernel_version?) + ".")
                       )
 
                       or (
-                        (.kernel_full_version? // "") != ""
-                        and ((.android_version? + "-" + .kernel_full_version?) == $zip_kernel)
+                        ($row.kernel_full_version? // "") != ""
+                        and (($row.android_version? + "-" + $row.kernel_full_version?) == $zip_kernel)
                       )
                     )
                   )
