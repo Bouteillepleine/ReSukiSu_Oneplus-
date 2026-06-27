@@ -797,8 +797,7 @@ jobs:
     if: ${{ inputs.mirror_toolchains }}
     uses: ./.github/workflows/mirror-toolchains.yml
     secrets: inherit
-
-  # ── NEW: download ccache binary once, share via artifact ──────────────────
+  
   prepare_ccache:
     name: Prepare ccache binary (download once)
     runs-on: ubuntu-latest
@@ -832,7 +831,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Upload ccache artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v8
         with:
           name: ccache-binary
           path: ccache
