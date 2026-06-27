@@ -598,8 +598,13 @@ jobs:
             done
 
             if [ "$susfs_base_version" = "unknown" ]; then
-              echo "::error::Could not extract SUSFS_VERSION from susfs.h for any active GKI key."
-              exit 1
+              #handle the case where susfs is toggled off, so version will be unknown
+              if [ "${#active_keys[@]}" -eq 0 ] || [ "${active_keys[0]:-}" = "" ]; then
+                susfs_base_version="none"
+              else
+                echo "::error::Could not extract SUSFS_VERSION from susfs.h for any active GKI key."
+                exit 1
+              fi
             fi
 
             for key in "${active_keys[@]}"; do
