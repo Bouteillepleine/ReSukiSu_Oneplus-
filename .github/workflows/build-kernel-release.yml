@@ -224,6 +224,20 @@ jobs:
             exit 1
           fi
 
+          echo "🔎 Found ${#all_json_files[@]} config JSON file(s)"
+          echo "🔎 Validating config JSON files..."
+
+          for file in "${all_json_files[@]}"; do
+            if ! jq empty "$file" >/dev/null 2>"/tmp/jq_error.log"; then
+              echo "::error file=${file}::Invalid JSON in config file"
+              echo "---- jq error for $file ----"
+              cat /tmp/jq_error.log
+              echo "---- first 80 lines of $file ----"
+              nl -ba "$file" | sed -n '1,80p'
+              exit 1
+            fi
+          done
+
           jq -s '
             map(
               if type == "array" then .[]
@@ -232,6 +246,8 @@ jobs:
               end
             )
           ' "${all_json_files[@]}" > matrix.json
+
+          echo "✅ matrix.json generated from configs"
 
           jq_filter="."
 
@@ -278,8 +294,13 @@ jobs:
                   or (.model | startswith($target + "-"))
                   or ((.model + "-" + .kernel_version) == $target)
                   or ((.model + "-" + .android_version + "-" + .kernel_version) == $target)
-                  or ((.model + "-" + (.kernel_full_version // "")) == $target)
-                  or ((.model + "-" + .android_version + "-" + (.kernel_full_version // "")) == $target)
+                  or (
+                    (.kernel_full_version? // "") != ""
+                    and (
+                      (.model + "-" + .kernel_full_version) == $target
+                      or (.model + "-" + .android_version + "-" + .kernel_full_version) == $target
+                    )
+                  )
                 )
               )
             ')"
@@ -291,7 +312,7 @@ jobs:
 
           filtered="$(echo "$filtered" | jq '
             sort_by(
-              (.os_version | gsub("OOS"; "") | tonumber) * -1,
+              (.os_version | gsub("OOS"; "") | tonumber? // 0) * -1,
               .model
             )
           ')"
