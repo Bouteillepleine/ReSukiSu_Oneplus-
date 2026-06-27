@@ -562,7 +562,6 @@ jobs:
         with:
           name: build-matrix
           path: matrix.json
-          archive: false
           retention-days: 7
 
       - name: 📊 Build plan summary
@@ -1250,21 +1249,21 @@ jobs:
         with:
           path: ./downloaded-artifacts
           merge-multiple: true
-          skip-decompress: true
 
       - name: 🔐 Generate Checksums
         shell: bash
         run: |
           set -euo pipefail
 
-          if ! compgen -G "./downloaded-artifacts/*.zip" > /dev/null; then
-            echo "::error::No ZIP artifacts found."
+          # ── FIX 1: only checksum AK3_ kernel ZIPs, exclude ccache-binary ──
+          if ! compgen -G "./downloaded-artifacts/AK3_*.zip" > /dev/null; then
+            echo "::error::No AK3 ZIP artifacts found."
             find ./downloaded-artifacts -maxdepth 2 -type f -print || true
             exit 1
           fi
 
           cd downloaded-artifacts
-          sha256sum *.zip | sort -k2 > ../00_CHECKSUMS.txt
+          sha256sum AK3_*.zip | sort -k2 > ../00_CHECKSUMS.txt
           cd ..
 
           echo "Generated 00_CHECKSUMS.txt:"
@@ -1344,6 +1343,7 @@ jobs:
             echo "$features"
           }
 
+          # ── FIX 2: robust jq with ? and 2>/dev/null ──────────────────────
           find_matrix_row() {
             local model="$1" os_version="$2" kernel_version="$3"
 
@@ -1352,14 +1352,13 @@ jobs:
             jq -c \
               --arg model "$model" \
               --arg os "$os_version" \
-              --arg kernel "$kernel_version" '
-                .[]
+              --arg kernel "$kernel_version" '.[]?
                 | select(
-                    (.model == $model or (.model | startswith($model + "-")) or ($model | startswith(.model + "-")))
-                    and .os_version == $os
-                    and ((.android_version + "-" + .kernel_version) == $kernel)
+                    (.model? == $model or (.model? | startswith($model + "-")) or ($model | startswith((.model? // "") + "-")))
+                    and .os_version? == $os
+                    and ((.android_version? + "-" + .kernel_version?) == $kernel)
                   )
-              ' "$MATRIX_FILE" | head -n1
+              ' "$MATRIX_FILE" 2>/dev/null | head -n1
           }
 
           parse_zip_name() {
@@ -1405,7 +1404,7 @@ jobs:
           for os in OOS16 OOS15 OOS14; do
             mapfile -t files < <(
               find downloaded-artifacts -maxdepth 1 -type f \
-                -name "*_${os}_*.zip" | sort
+                -name "AK3_*_${os}_*.zip" | sort
             )
 
             [ "${#files[@]}" -eq 0 ] && continue
@@ -1548,7 +1547,8 @@ jobs:
             PARSED_SUSFS_VER="$susfs_ver"
           }
 
-          for file in $(find downloaded-artifacts -maxdepth 1 -name "*.zip" -type f | sort); do
+          # ── FIX 3: only process AK3_ ZIPs, exclude ccache-binary ─────────
+          for file in $(find downloaded-artifacts -maxdepth 1 -name "AK3_*.zip" -type f | sort); do
             zipname="$(basename "$file" .zip)"
 
             parse_zip_name "$zipname"
@@ -1812,6 +1812,7 @@ jobs:
           - Added optional ADIOS I/O scheduler support for 6.1 and 6.6 kernels.
           - Added performance patches: memory, TCP, F2FS, CPU scheduler, I/O tuning.
           - Compiler optimization: ${OPTIMIZE_LEVEL}.
+          - Fixed ccache-binary appearing in release device list and checksums.
 
           ---
 
@@ -1860,8 +1861,9 @@ jobs:
 
           echo "Uploading kernel ZIPs..."
 
+          # ── FIX: only upload AK3_ kernel ZIPs, not ccache-binary ─────────
           shopt -s nullglob
-          for file in ./downloaded-artifacts/*.zip; do
+          for file in ./downloaded-artifacts/AK3_*.zip; do
             echo "Uploading $file..."
             gh release upload "${{ env.NEW_TAG }}" "$file" \
               --clobber \
@@ -1906,7 +1908,7 @@ jobs:
           gh release create ${{ env.NEW_TAG }} \
             --title "${{ env.RELEASE_NAME }}" \
             --notes-file release_notes.md \
-            ./downloaded-artifacts/*.zip \
+            ./downloaded-artifacts/AK3_*.zip \
             00_DOWNLOADS.md \
             00_CHECKSUMS.txt
           \`\`\`
@@ -1923,7 +1925,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          kernel_count="$(find ./downloaded-artifacts -maxdepth 1 -name "*.zip" -type f | wc -l)"
+          kernel_count="$(find ./downloaded-artifacts -maxdepth 1 -name "AK3_*.zip" -type f | wc -l)"
 
           cat >> "$GITHUB_STEP_SUMMARY" << EOF
 
@@ -1947,95 +1949,10 @@ jobs:
           echo "- \`00_CHECKSUMS.txt\` — SHA256 checksums" >> "$GITHUB_STEP_SUMMARY"
 
           shopt -s nullglob
-          for zip in ./downloaded-artifacts/*.zip; do
+          for zip in ./downloaded-artifacts/AK3_*.zip; do
             name="$(basename "$zip")"
             size="$(stat -c%s "$zip")"
             size_mb="$(awk -v s="$size" 'BEGIN{printf "%.2f", s / 1024 / 1024}')"
             echo "- \`$name\` (${size_mb} MB)" >> "$GITHUB_STEP_SUMMARY"
           done
           shopt -u nullglob
-
-      - name: 📱 Send Telegram Notification
-        if: ${{ inputs.make_release == 'release' && success() }}
-        shell: bash
-        env:
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          set -euo pipefail
-          echo "::group::Telegram Notification"
-
-          if [ -z "${TG_BOT_TOKEN:-}" ] || [ -z "${TG_CHAT_ID:-}" ]; then
-            echo "⚠️ Telegram secrets not configured. Skipping."
-            echo "::endgroup::"
-            exit 0
-          fi
-
-          shopt -s nullglob
-          ZIPS=(./downloaded-artifacts/*.zip)
-          shopt -u nullglob
-          ZIP_COUNT=${#ZIPS[@]}
-
-          if [ "$ZIP_COUNT" -eq 0 ]; then
-            MODELS="None"
-            OS_VERS="None"
-            KSU_VERS="Unknown"
-          else
-            MODELS=$(printf "%s\n" "${ZIPS[@]}" \
-              | awk -F'/' '{print $NF}' \
-              | awk -F'_' '{print $2}' \
-              | sort -u | paste -sd ", " -)
-            OS_VERS=$(printf "%s\n" "${ZIPS[@]}" \
-              | awk -F'/' '{print $NF}' \
-              | awk -F'_' '{print $3}' \
-              | sort -u | paste -sd ", " -)
-            KSU_VERS=$(printf "%s\n" "${ZIPS[@]}" \
-              | awk -F'/' '{print $NF}' \
-              | awk -F'_' '{print $6}' \
-              | sort -u | paste -sd ", " -)
-          fi
-
-          MSG_TEXT="🚀 <b>OnePlus Kernel Build Successful!</b>
-          ━━━━━━━━━━━━━━━━━━
-          <b>🏷️ Release Tag:</b> <code>${{ env.NEW_TAG }}</code>
-          <b>🔐 Root Solution:</b> ReSukiSU (v${KSU_VERS})
-          <b>🛡️ SUSFS Version:</b> ${{ env.SUSFS_BASE_VERSION }}
-          <b>⚙️ Optimization:</b> ${{ inputs.optimize_level }} | Clean: ${{ inputs.clean_build }}
-          ━━━━━━━━━━━━━━━━━━
-          <b>📦 Total Packages:</b> ${ZIP_COUNT} zips
-          <b>📱 Supported Models:</b> ${MODELS}
-          <b>💻 Supported OS:</b> ${OS_VERS}
-          ━━━━━━━━━━━━━━━━━━
-          👉 <a href=\"${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }}\"><b>📥 GET YOUR KERNEL HERE</b></a>"
-
-          IFS=' ,' read -r -a CHAT_IDS <<< "$TG_CHAT_ID"
-
-          for ID in "${CHAT_IDS[@]}"; do
-            [ -z "$ID" ] && continue
-
-            PAYLOAD=$(jq -n \
-              --arg chat_id "$ID" \
-              --arg text "$MSG_TEXT" \
-              '{
-                chat_id: $chat_id,
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-                text: $text
-              }')
-
-            RESPONSE=$(curl -s -w "\n%{http_code}" \
-              -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-              -H "Content-Type: application/json" \
-              -d "$PAYLOAD")
-
-            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-            RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)
-
-            if [ "$HTTP_CODE" -eq 200 ]; then
-              echo "✅ Telegram notification sent to $ID"
-            else
-              echo "::warning::Telegram failed for $ID (HTTP $HTTP_CODE): $RESPONSE_BODY"
-            fi
-          done
-
-          echo "::endgroup::"
