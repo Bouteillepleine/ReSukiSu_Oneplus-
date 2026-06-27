@@ -14,12 +14,17 @@ on:
     inputs:
       make_release:
         description: |
-          Create a GitHub Release with all built ZIPs.
-          • true  → tag is created, assets uploaded, release published
-          • false → artifacts are uploaded only (no release)
+          Release mode.
+          • no       → artifacts only, no tag, no release
+          • tag_only → create tag only, no release (review ZIPs before publishing)
+          • release  → create tag + publish release immediately
         required: true
-        type: boolean
-        default: false
+        type: choice
+        options:
+          - no
+          - tag_only
+          - release
+        default: no
 
       op_model:
         description: |
@@ -430,7 +435,8 @@ jobs:
             HASH_QUERY="{ project(fullPath: \"${GITLAB_PROJECT_PATH}\") { repository { ch: commit(ref: \"${user_val}\") { sha } } } }"
             RELEASE_QUERY="{ project(fullPath: \"${GITLAB_PROJECT_PATH}\") { repository { ch: commit(ref: \"${user_val}\") { sha } blobs(paths: [\"kernel_patches/include/linux/susfs.h\"], ref: \"${user_val}\") { nodes { rawBlob } } } } }"
 
-            if [ "${{ inputs.make_release }}" = "true" ]; then
+            # ── Résoudre SUSFS version si tag_only ou release ────────────────
+            if [ "${{ inputs.make_release }}" = "release" ] || [ "${{ inputs.make_release }}" = "tag_only" ]; then
               GL_QUERY="$RELEASE_QUERY"
             else
               GL_QUERY="$HASH_QUERY"
@@ -450,7 +456,7 @@ jobs:
                 if [ -n "$resolved" ] && [ "$resolved" != "null" ]; then
                   echo "  ✅ Query for $key Success"
 
-                  if [ "${{ inputs.make_release }}" = "true" ]; then
+                  if [ "${{ inputs.make_release }}" = "release" ] || [ "${{ inputs.make_release }}" = "tag_only" ]; then
                     extracted="$(echo "$RESPONSE" | jq -r '.data.project.repository.blobs.nodes[0].rawBlob // empty' | grep '#define SUSFS_VERSION' | awk -F'"' '{print $2}' || true)"
                     susfs_versions_per_key[$key]="${extracted:-unknown}"
                     echo "  ✅ $key → SUSFS_VERSION = ${extracted:-unknown}"
@@ -470,8 +476,9 @@ jobs:
               exit 1
             fi
 
-            if [ "${{ inputs.make_release }}" = "true" ] && [ "${susfs_versions_per_key[$key]:-unknown}" = "unknown" ]; then
-              echo "::error::Could not extract SUSFS_VERSION from susfs.h for '$key'. Cannot proceed with release."
+            if { [ "${{ inputs.make_release }}" = "release" ] || [ "${{ inputs.make_release }}" = "tag_only" ]; } \
+              && [ "${susfs_versions_per_key[$key]:-unknown}" = "unknown" ]; then
+              echo "::error::Could not extract SUSFS_VERSION from susfs.h for '$key'. Cannot proceed with tag/release."
               exit 1
             fi
 
@@ -488,7 +495,7 @@ jobs:
           echo "susfs_hash_android15_6_6=${susfs_hashes[android15-6.6]:-unknown}" >> "$GITHUB_OUTPUT"
           echo "susfs_hash_android16_6_12=${susfs_hashes[android16-6.12]:-unknown}" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ inputs.make_release }}" = "true" ]; then
+          if [ "${{ inputs.make_release }}" = "release" ] || [ "${{ inputs.make_release }}" = "tag_only" ]; then
             susfs_base_version="unknown"
 
             for key in "${active_keys[@]}"; do
@@ -587,7 +594,12 @@ jobs:
             build_ts_display="📌 \`$build_ts_input\`"
           fi
 
-          release_display="${{ inputs.make_release && '✅ Yes' || '❌ No' }}"
+          case "${{ inputs.make_release }}" in
+            release)  release_display="🚀 release — tag + publish immediately" ;;
+            tag_only) release_display="🏷️ tag_only — tag created, release pending review" ;;
+            *)        release_display="❌ no — artifacts only" ;;
+          esac
+
           clean_display="${{ inputs.clean_build && '✅ Yes' || '❌ No' }}"
           debug_display="${{ inputs.debug && '✅ Yes' || '❌ No' }}"
           adios_display="${{ inputs.enable_adios && '✅ Yes' || '❌ No' }}"
@@ -647,7 +659,7 @@ jobs:
           | **Build Timestamp** | $build_ts_display |
           | **Optimization** | \`${{ inputs.optimize_level }}\` |
           | **Clean Build / No ccache** | $clean_display |
-          | **Create Release** | $release_display |
+          | **Release Mode** | $release_display |
           | **Debug Artifacts** | $debug_display |
           | **ADIOS I/O Scheduler** | $adios_display |
           | **Sync Toolchains** | $mirror_display |
@@ -771,6 +783,13 @@ jobs:
             {
               echo ""
               echo "> **⚠️ Android-Kernel Filter:** Only OOS15/OOS16 compatibility groups are included for \`${{ inputs.op_model }}\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "${{ inputs.make_release }}" = "tag_only" ]; then
+            {
+              echo ""
+              echo "> **🏷️ Tag-Only Mode:** A tag will be created after builds complete, but no release will be published. Review artifacts then publish manually."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -1118,7 +1137,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       !cancelled() &&
-      inputs.make_release == true &&
+      (inputs.make_release == 'release' || inputs.make_release == 'tag_only') &&
       needs.build.result == 'success' &&
       needs.set-op-model.result == 'success'
     env:
@@ -1126,7 +1145,7 @@ jobs:
       REPO_NAME: ${{ github.event.repository.name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       SUSFS_BASE_VERSION: ${{ needs.set-op-model.outputs.susfs_base_version }}
-      RELEASE_NAME: 'OnePlus Kernels • OOS/COS • ReSukiSU • SUSFS ${{ needs.set-op-model.outputs.susfs_base_version }} • ${{ inputs.op_model }}'
+      RELEASE_NAME: 'ReSukiSU 📦 SUSFS ${{ needs.set-op-model.outputs.susfs_base_version }} • ${{ inputs.op_model }}'
 
     steps:
       - name: 📥 Checkout code
@@ -1141,9 +1160,6 @@ jobs:
 
           TAG_PREFIX="susfs-${SUSFS_BASE_VERSION}-rsksu"
 
-          # ── Récupérer le dernier tag correspondant au préfixe ─────────────
-          # Regex ancrée en fin de chaîne pour éviter le faux split sur "rsksu"
-          # qui contient lui-même "-r", causant l'erreur tonumber sur "sku-"
           LATEST_MATCHING_TAG="$(
             gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/tags?per_page=100" \
               --jq "
@@ -1167,7 +1183,6 @@ jobs:
           if [ -z "$LATEST_MATCHING_TAG" ]; then
             NEW_TAG="${TAG_PREFIX}-r1"
           else
-            # Extraire N depuis la fin de la chaîne — double sécurité bash
             CURRENT_N="$(echo "$LATEST_MATCHING_TAG" | grep -oE '[0-9]+$')"
 
             if [[ ! "$CURRENT_N" =~ ^[0-9]+$ ]]; then
@@ -1250,7 +1265,6 @@ jobs:
             echo ""
           } > 00_DOWNLOADS.md
 
-          # ── Helper: liste des features depuis la matrice ──────────────────
           get_feature_list() {
             local row="$1"
             local features=""
@@ -1285,7 +1299,6 @@ jobs:
             echo "$features"
           }
 
-          # ── Helper: recherche dans la matrice ─────────────────────────────
           find_matrix_row() {
             local model="$1" os_version="$2" kernel_version="$3"
 
@@ -1304,18 +1317,9 @@ jobs:
               ' "$MATRIX_FILE" | head -n1
           }
 
-          # ── Helper: parsing robuste du nom de ZIP ─────────────────────────
-          # Format attendu: AK3_<MODEL>_<OS>_<KERNEL>_<KSUTYPE>_<KSUVER>[_SuSFS_<SUSVER>].zip
-          # On utilise jq/sed pour extraire les champs depuis la fin du nom
-          # afin d'éviter les faux splits sur les tirets dans le nom du modèle
           parse_zip_name() {
             local zipname="$1"
-            # Supprimer le préfixe AK3_
             local rest="${zipname#AK3_}"
-
-            # Extraire depuis la fin: les champs fixes sont OS, KERNEL, KSUTYPE, KSUVER
-            # Le modèle est tout ce qui précède le premier champ OOS/android connu
-            # On split sur _ et on reconstruit en cherchant le pattern OOS ou android
             local -a parts
             IFS='_' read -ra parts <<< "$rest"
 
@@ -1326,14 +1330,12 @@ jobs:
 
             for part in "${parts[@]}"; do
               if [ "$model_done" = "false" ]; then
-                # Détecter le début des champs fixes: OOS* ou android*
                 if [[ "$part" =~ ^OOS[0-9]+$ ]] || [[ "$part" =~ ^android[0-9]+-[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
                   model_done=true
                   os_version="$part"
                   i=$(( i + 1 ))
                   continue
                 fi
-                # Accumuler le modèle
                 [ -n "$model" ] && model="${model}_${part}" || model="$part"
               else
                 case $i in
@@ -1347,7 +1349,6 @@ jobs:
               fi
             done
 
-            # Exporter les variables dans le scope appelant
             PARSED_MODEL="$model"
             PARSED_OS="$os_version"
             PARSED_KERNEL="$kernel_version"
@@ -1383,7 +1384,6 @@ jobs:
               name="$(basename "$file")"
               zipname="${name%.zip}"
 
-              # ── Parsing robuste via helper ──────────────────────────────
               parse_zip_name "$zipname"
               model="$PARSED_MODEL"
               os_version="$PARSED_OS"
@@ -1463,7 +1463,6 @@ jobs:
 
           declare -A device_info
 
-          # ── Parsing robuste du nom de ZIP (même helper inline) ────────────
           parse_zip_name() {
             local zipname="$1"
             local rest="${zipname#AK3_}"
@@ -1593,7 +1592,7 @@ jobs:
           - Do **not** flash a ZIP just because the device name looks similar.
           - Flashing the wrong kernel may cause bootloop.
           - Back up your current boot/init_boot/vendor_boot partitions.
-          - Keep a stock boot/init_boot/vendor_boot image ready for rollback.
+          - Keep a stock boot/init_boot image ready for rollback.
           - If switching from Magisk, APatch, KernelSU, ReSukiSU, or another fork, clean old root leftovers carefully.
 
           ---
@@ -1742,7 +1741,7 @@ jobs:
           If the device bootloops:
 
           1. Boot to fastboot/recovery.
-          2. Restore your backed-up stock boot/init_boot/vendor_boot image.
+          2. Restore your backed-up stock boot/init_boot image.
           3. Reboot.
           4. Report the exact ZIP filename, device model, OS version, and kernel base.
 
@@ -1752,6 +1751,7 @@ jobs:
 
           - Built OnePlus kernel ZIPs with ReSukiSU.
           - Included SUSFS ${SUSFS_BASE_VERSION} where enabled.
+          - Added tag_only release mode — create tag, review artifacts, publish later.
           - Fixed tag generation regex to avoid tonumber error on "rsksu" substring.
           - Fixed ZIP name parsing to handle model names containing underscores.
           - Improved release download organization with grouped index.
@@ -1783,6 +1783,7 @@ jobs:
           cat release_notes.md
 
       - name: 🚀 Create GitHub Release
+        if: ${{ inputs.make_release == 'release' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1793,6 +1794,7 @@ jobs:
             --notes-file release_notes.md
 
       - name: 📤 Upload Release Assets Dynamically
+        if: ${{ inputs.make_release == 'release' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1819,8 +1821,56 @@ jobs:
           done
           shopt -u nullglob
 
+      - name: 🏷️ Tag-only summary
+        if: ${{ inputs.make_release == 'tag_only' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Tag created: ${{ env.NEW_TAG }}"
+          echo "No release published — tag_only mode."
+
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+
+          ---
+
+          ## 🏷️ Tag Created — Release Pending Your Review
+
+          **Tag:** [\`${{ env.NEW_TAG }}\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }})
+
+          The tag has been pushed. **No release has been published yet.**
+
+          ### ✅ When you are happy with the artifacts
+
+          **Option A — GitHub UI (recommended):**
+          1. Go to **Releases → Draft a new release**
+          2. Choose existing tag: \`${{ env.NEW_TAG }}\`
+          3. Paste the release notes from the \`release_notes.md\` artifact
+          4. Upload the ZIPs from the workflow artifacts
+          5. Publish
+
+          **Option B — Re-run this workflow with \`release\` mode:**
+          - Set \`make_release\` → \`release\`
+          - The same tag prefix will auto-increment to the next revision
+
+          **Option C — GitHub CLI:**
+          \`\`\`bash
+          gh release create ${{ env.NEW_TAG }} \
+            --title "${{ env.RELEASE_NAME }}" \
+            --notes-file release_notes.md \
+            ./downloaded-artifacts/*.zip \
+            00_DOWNLOADS.md \
+            00_CHECKSUMS.txt
+          \`\`\`
+
+          ### 📦 Artifacts available in this run
+
+          Download them from the **Actions → This run → Artifacts** section before they expire.
+
+          EOF
+
       - name: 📊 Release summary
-        if: success()
+        if: ${{ inputs.make_release == 'release' && success() }}
         shell: bash
         run: |
           set -euo pipefail
