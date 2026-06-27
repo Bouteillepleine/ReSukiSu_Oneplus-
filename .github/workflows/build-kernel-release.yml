@@ -1194,44 +1194,38 @@ jobs:
           MATRIX_FILE="./downloaded-artifacts/matrix.json"
 
           {
+            # ── En-tête ───────────────────────────────────────────────────
             echo "# 📥 OnePlus Kernel Downloads"
             echo ""
             echo "> Select the ZIP matching your exact **device**, **OS version**, and **kernel base**."
             echo ""
-            echo "## ⚠️ Read this first"
+
+            # ── 4.1 Tableau Match Your Device ────────────────────────────
+            echo "## 🎯 Find Your ZIP in 3 Steps"
             echo ""
-            echo "- Flashing the wrong ZIP may cause bootloop."
-            echo "- Match **Device**, **OS version**, and **Kernel Base** exactly."
-            echo "- The OS label may appear as \`OOS14/OOS15/OOS16\`, but also based on **ColorOS/COS 14/15/16**."
-            echo "- In this release, treat the \`OOSxx\` label as the kernel/source compatibility group unless your device notes say otherwise."
-            echo "- Back up your current boot/init_boot before flashing."
-            echo "- Use Kernel Flasher."
+            echo "| Step | What to check | Where to find it |"
+            echo "|------|--------------|------------------|"
+            echo "| **1. Device model** | Match your exact model name | \`Settings → About Phone → Model\` |"
+            echo "| **2. OS version** | Match \`OOS14\` / \`OOS15\` / \`OOS16\` to your firmware | \`Settings → About Phone → Software Version\` |"
+            echo "| **3. Kernel base** | Match \`android15-6.6.XX\` to your current kernel | \`Settings → About Phone → Kernel Version\` |"
+            echo ""
+            echo "> ⚠️ **Flashing the wrong ZIP may cause bootloop.** When in doubt, check all three steps before downloading."
             echo ""
             echo "---"
             echo ""
+
+            # ── Comment lire le nom du ZIP ────────────────────────────────
             echo "## 🧾 How to read the ZIP name"
             echo ""
-            echo "Example:"
-            echo ""
-            echo "\`AK3_OP12_OOS15_android15-6.6.30_RSKSU_31234_SuSFS_v2.2.0.zip\`"
+            echo "Example: \`AK3_OP12_OOS15_android15-6.6.30_RSKSU_31234_SuSFS_v2.2.0.zip\`"
             echo ""
             echo "| Part | Meaning |"
-            echo "|---|---|"
+            echo "|------|---------|"
             echo "| \`OP12\` | Device/model family |"
-            echo "| \`OOS15\` | OS compatibility group. Also correspond to compatible COS15-based builds depending on device/source |"
-            echo "| \`android15-6.6.30\` | Android common kernel base and kernel version |"
-            echo "| \`RSKSU_31234\` | ReSukiSU type and build/version |"
+            echo "| \`OOS15\` | OS compatibility group — also covers compatible COS15-based builds |"
+            echo "| \`android15-6.6.30\` | Android common kernel base and exact kernel version |"
+            echo "| \`RSKSU_31234\` | ReSukiSU type and build number |"
             echo "| \`SuSFS_v2.2.0\` | SUSFS version included in the kernel |"
-            echo ""
-            echo "---"
-            echo ""
-            echo "## 🔐 Recommended apps"
-            echo ""
-            echo "| Purpose | App | Link |"
-            echo "|---|---|---|"
-            echo "| Root manager | ReSukiSU Manager | https://github.com/ReSukiSU/ReSukiSU/releases |"
-            echo "| SUSFS userspace module | KSU SUSFS Module | https://github.com/sidex15/ksu_module_susfs/releases |"
-            echo "| Kernel flashing | Kernel Flasher | https://github.com/fatalcoder524/KernelFlasher/releases |"
             echo ""
             echo "---"
             echo ""
@@ -1304,7 +1298,10 @@ jobs:
           }
 
           for os in OOS16 OOS15 OOS14; do
-            mapfile -t files < <(find downloaded-artifacts -maxdepth 1 -type f -name "*_${os}_*.zip" | sort)
+            mapfile -t files < <(
+              find downloaded-artifacts -maxdepth 1 -type f \
+                -name "*_${os}_*.zip" | sort
+            )
 
             if [ "${#files[@]}" -eq 0 ]; then
               continue
@@ -1315,13 +1312,19 @@ jobs:
             {
               echo "## ${os} / COS${os_number} compatibility group"
               echo ""
-              echo "> These builds are grouped by the workflow OS compatibility label \`${os}\`. For some regional devices, this may correspond to compatible **COS${os_number}** firmware/kernel sources."
+              echo "> These builds target \`${os}\` firmware. For some regional devices, this also covers compatible **COS${os_number}** firmware/kernel sources."
               echo ""
-              echo "| Device | OS Group | Kernel Base | Root / SUSFS | Optional Features | Download | SHA256 |"
-              echo "|---|---|---|---|---|---|---|"
+
+              # ── 4.1 Sous-tableau Match Your Device par groupe OS ─────────
+              echo "### 🎯 Match your device — ${os} / COS${os_number}"
+              echo ""
+              echo "| # | Device | OS Group | Kernel Base | Root & SUSFS | Optional Features | Download | SHA256 |"
+              echo "|---|--------|----------|-------------|--------------|-------------------|----------|--------|"
             } >> 00_DOWNLOADS.md
 
+            idx=0
             for file in "${files[@]}"; do
+              idx=$(( idx + 1 ))
               name="$(basename "$file")"
               zipname="${name%.zip}"
               rest="${zipname#AK3_}"
@@ -1335,8 +1338,10 @@ jobs:
               ksu_ver="${parts[4]:-unknown}"
 
               susfs_ver="none"
+              susfs_display="❌ none"
               if [ "${parts[5]:-}" = "SuSFS" ]; then
                 susfs_ver="${parts[6]:-unknown}"
+                susfs_display="✅ ${susfs_ver}"
               fi
 
               row="$(find_matrix_row "$model" "$os_version" "$kernel_version" || true)"
@@ -1346,30 +1351,55 @@ jobs:
               short_sha="${sha:0:12}"
               asset_url="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.NEW_TAG }}/${name}"
 
-              echo "| \`${model}\` | \`${os_version}\` / \`COS${os_number}\`* | \`${kernel_version}\` | \`${ksu_type}-${ksu_ver}\`, \`SUSFS-${susfs_ver}\` | \`${features}\` | [Download](${asset_url}) | \`${short_sha}...\` |" >> 00_DOWNLOADS.md
+              echo "| ${idx} | \`${model}\` | \`${os_version}\` / \`COS${os_number}\`* | \`${kernel_version}\` | \`${ksu_type}-${ksu_ver}\`, ${susfs_display} | \`${features}\` | [⬇️ Download](${asset_url}) | \`${short_sha}...\` |" \
+                >> 00_DOWNLOADS.md
             done
 
             {
               echo ""
-              echo "\\* COS compatibility depends on your exact device/region/kernel source. Match the kernel base before flashing."
+              echo "\\* COS compatibility depends on your exact device/region/kernel source. Always match the kernel base before flashing."
               echo ""
               echo "---"
               echo ""
             } >> 00_DOWNLOADS.md
           done
 
+          # ── Vérification des checksums ────────────────────────────────
           {
-            echo "## 🔐 Full SHA256 Checksums"
+            echo "## 🔐 Verify Your Download"
             echo ""
-            echo "Use \`00_CHECKSUMS.txt\` from this release to verify downloads."
+            echo "Download \`00_CHECKSUMS.txt\` from this release and run:"
             echo ""
             echo '```bash'
             echo "sha256sum -c 00_CHECKSUMS.txt"
             echo '```'
             echo ""
-            echo "## 🧯 Recovery reminder"
+            echo "All files should report \`OK\`."
             echo ""
-            echo "Keep your stock boot/init_boot/vendor_boot backup. If the device bootloops, restore the matching stock image from fastboot/recovery."
+            echo "---"
+            echo ""
+
+            # ── Apps recommandées ─────────────────────────────────────────
+            echo "## 🔐 Recommended Apps"
+            echo ""
+            echo "| Purpose | App | Link |"
+            echo "|---------|-----|------|"
+            echo "| Root manager | ReSukiSU Manager | https://github.com/ReSukiSU/ReSukiSU/releases |"
+            echo "| SUSFS userspace module | KSU SUSFS Module | https://github.com/sidex15/ksu_module_susfs/releases |"
+            echo "| Kernel flashing | Kernel Flasher | https://github.com/fatalcoder524/KernelFlasher/releases |"
+            echo ""
+            echo "---"
+            echo ""
+
+            # ── Rollback ──────────────────────────────────────────────────
+            echo "## 🧯 Rollback / Recovery"
+            echo ""
+            echo "If the device bootloops after flashing:"
+            echo ""
+            echo "1. Boot to fastboot or recovery."
+            echo "2. Flash your backed-up stock \`boot\`/\`init_boot\`/\`vendor_boot\` image."
+            echo "3. Reboot normally."
+            echo "4. Report the exact ZIP filename, device model, OS version, and kernel base."
           } >> 00_DOWNLOADS.md
 
           echo "Generated 00_DOWNLOADS.md:"
