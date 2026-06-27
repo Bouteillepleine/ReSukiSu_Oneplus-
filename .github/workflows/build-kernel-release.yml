@@ -831,7 +831,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Upload ccache artifact
-        uses: actions/upload-artifact@v8
+        uses: actions/upload-artifact@v4
         with:
           name: ccache-binary
           path: ccache
@@ -883,7 +883,7 @@ jobs:
       
       - name: Get prebuilt ccache (downloaded once by prepare_ccache)
         if: ${{ inputs.clean_build == false || inputs.clean_build == 'false' }}
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: ccache-binary
           path: ccache-dl
@@ -1248,7 +1248,7 @@ jobs:
           echo "✅ Tag ${NEW_TAG} created via API (no git push)"
 
       - name: 📥 Download Artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           path: ./downloaded-artifacts
           merge-multiple: true
