@@ -740,7 +740,7 @@ jobs:
           ## ✅ Pre-build Notes
 
           - Confirm the **model**, **OS compatibility group**, and **kernel base** before flashing any resulting ZIP.
-          - Labels such as \`OOS14/OOS15/OOS16\`also correspond to compatible \`COS14/COS15/COS16\` builds.
+          - Labels such as \`OOS14/OOS15/OOS16\` also correspond to compatible \`COS14/COS15/COS16\` builds.
           - A build job count higher than device count means the matrix was expanded.
           - This workflow currently enforces **one ReSukiSU configuration per run**.
           EOF
@@ -1141,18 +1141,42 @@ jobs:
 
           TAG_PREFIX="susfs-${SUSFS_BASE_VERSION}-rsksu"
 
+          # ── Récupérer le dernier tag correspondant au préfixe ─────────────
+          # Regex ancrée en fin de chaîne pour éviter le faux split sur "rsksu"
+          # qui contient lui-même "-r", causant l'erreur tonumber sur "sku-"
           LATEST_MATCHING_TAG="$(
             gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/tags?per_page=100" \
-              --jq "[.[] | select(.name | startswith(\"${TAG_PREFIX}-r\"))] |
-                    sort_by(.name | split(\"-r\")[1] | tonumber) |
-                    last |
-                    .name // empty"
+              --jq "
+                [
+                  .[]
+                  | select(.name | test(\"^\" + \"${TAG_PREFIX}\" + \"-r[0-9]+$\"))
+                ]
+                | sort_by(
+                    .name
+                    | capture(\"-r(?<n>[0-9]+)$\")
+                    | .n
+                    | tonumber
+                  )
+                | last
+                | .name // empty
+              "
           )"
+
+          echo "Latest matching tag: '${LATEST_MATCHING_TAG:-<none>}'"
 
           if [ -z "$LATEST_MATCHING_TAG" ]; then
             NEW_TAG="${TAG_PREFIX}-r1"
           else
-            NEW_TAG="$(echo "$LATEST_MATCHING_TAG" | awk -F'-r' -v prefix="$TAG_PREFIX" '{printf "%s-r%d", prefix, $2+1}')"
+            # Extraire N depuis la fin de la chaîne — double sécurité bash
+            CURRENT_N="$(echo "$LATEST_MATCHING_TAG" | grep -oE '[0-9]+$')"
+
+            if [[ ! "$CURRENT_N" =~ ^[0-9]+$ ]]; then
+              echo "::error::Could not extract revision number from tag: '$LATEST_MATCHING_TAG'"
+              exit 1
+            fi
+
+            NEXT_N=$(( CURRENT_N + 1 ))
+            NEW_TAG="${TAG_PREFIX}-r${NEXT_N}"
           fi
 
           echo "New tag: $NEW_TAG"
@@ -1194,13 +1218,10 @@ jobs:
           MATRIX_FILE="./downloaded-artifacts/matrix.json"
 
           {
-            # ── En-tête ───────────────────────────────────────────────────
             echo "# 📥 OnePlus Kernel Downloads"
             echo ""
             echo "> Select the ZIP matching your exact **device**, **OS version**, and **kernel base**."
             echo ""
-
-            # ── 4.1 Tableau Match Your Device ────────────────────────────
             echo "## 🎯 Find Your ZIP in 3 Steps"
             echo ""
             echo "| Step | What to check | Where to find it |"
@@ -1213,8 +1234,6 @@ jobs:
             echo ""
             echo "---"
             echo ""
-
-            # ── Comment lire le nom du ZIP ────────────────────────────────
             echo "## 🧾 How to read the ZIP name"
             echo ""
             echo "Example: \`AK3_OP12_OOS15_android15-6.6.30_RSKSU_31234_SuSFS_v2.2.0.zip\`"
@@ -1231,6 +1250,7 @@ jobs:
             echo ""
           } > 00_DOWNLOADS.md
 
+          # ── Helper: liste des features depuis la matrice ──────────────────
           get_feature_list() {
             local row="$1"
             local features=""
@@ -1256,29 +1276,20 @@ jobs:
               '
             )"
 
-            if [ -z "$features" ]; then
-              features="standard"
-            fi
+            [ -z "$features" ] && features="standard"
 
             if [ "${{ inputs.enable_adios }}" = "true" ]; then
-              if [ "$features" = "standard" ]; then
-                features="ADIOS"
-              else
-                features="${features}, ADIOS"
-              fi
+              [ "$features" = "standard" ] && features="ADIOS" || features="${features}, ADIOS"
             fi
 
             echo "$features"
           }
 
+          # ── Helper: recherche dans la matrice ─────────────────────────────
           find_matrix_row() {
-            local model="$1"
-            local os_version="$2"
-            local kernel_version="$3"
+            local model="$1" os_version="$2" kernel_version="$3"
 
-            if [ ! -f "$MATRIX_FILE" ]; then
-              return 0
-            fi
+            [ -f "$MATRIX_FILE" ] || return 0
 
             jq -c \
               --arg model "$model" \
@@ -1286,15 +1297,63 @@ jobs:
               --arg kernel "$kernel_version" '
                 .[]
                 | select(
-                    (
-                      .model == $model
-                      or (.model | startswith($model + "-"))
-                      or ($model | startswith(.model + "-"))
-                    )
+                    (.model == $model or (.model | startswith($model + "-")) or ($model | startswith(.model + "-")))
                     and .os_version == $os
                     and ((.android_version + "-" + .kernel_version) == $kernel)
                   )
               ' "$MATRIX_FILE" | head -n1
+          }
+
+          # ── Helper: parsing robuste du nom de ZIP ─────────────────────────
+          # Format attendu: AK3_<MODEL>_<OS>_<KERNEL>_<KSUTYPE>_<KSUVER>[_SuSFS_<SUSVER>].zip
+          # On utilise jq/sed pour extraire les champs depuis la fin du nom
+          # afin d'éviter les faux splits sur les tirets dans le nom du modèle
+          parse_zip_name() {
+            local zipname="$1"
+            # Supprimer le préfixe AK3_
+            local rest="${zipname#AK3_}"
+
+            # Extraire depuis la fin: les champs fixes sont OS, KERNEL, KSUTYPE, KSUVER
+            # Le modèle est tout ce qui précède le premier champ OOS/android connu
+            # On split sur _ et on reconstruit en cherchant le pattern OOS ou android
+            local -a parts
+            IFS='_' read -ra parts <<< "$rest"
+
+            local model="" os_version="" kernel_version="" ksu_type="" ksu_ver=""
+            local susfs_ver="none"
+            local model_done=false
+            local i=0
+
+            for part in "${parts[@]}"; do
+              if [ "$model_done" = "false" ]; then
+                # Détecter le début des champs fixes: OOS* ou android*
+                if [[ "$part" =~ ^OOS[0-9]+$ ]] || [[ "$part" =~ ^android[0-9]+-[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+                  model_done=true
+                  os_version="$part"
+                  i=$(( i + 1 ))
+                  continue
+                fi
+                # Accumuler le modèle
+                [ -n "$model" ] && model="${model}_${part}" || model="$part"
+              else
+                case $i in
+                  1) kernel_version="$part" ;;
+                  2) ksu_type="$part" ;;
+                  3) ksu_ver="$part" ;;
+                  4) [ "$part" = "SuSFS" ] && susfs_ver="pending" || true ;;
+                  5) [ "${susfs_ver}" = "pending" ] && susfs_ver="$part" || true ;;
+                esac
+                i=$(( i + 1 ))
+              fi
+            done
+
+            # Exporter les variables dans le scope appelant
+            PARSED_MODEL="$model"
+            PARSED_OS="$os_version"
+            PARSED_KERNEL="$kernel_version"
+            PARSED_KSU_TYPE="$ksu_type"
+            PARSED_KSU_VER="$ksu_ver"
+            PARSED_SUSFS_VER="$susfs_ver"
           }
 
           for os in OOS16 OOS15 OOS14; do
@@ -1303,9 +1362,7 @@ jobs:
                 -name "*_${os}_*.zip" | sort
             )
 
-            if [ "${#files[@]}" -eq 0 ]; then
-              continue
-            fi
+            [ "${#files[@]}" -eq 0 ] && continue
 
             os_number="${os#OOS}"
 
@@ -1314,8 +1371,6 @@ jobs:
               echo ""
               echo "> These builds target \`${os}\` firmware. For some regional devices, this also covers compatible **COS${os_number}** firmware/kernel sources."
               echo ""
-
-              # ── 4.1 Sous-tableau Match Your Device par groupe OS ─────────
               echo "### 🎯 Match your device — ${os} / COS${os_number}"
               echo ""
               echo "| # | Device | OS Group | Kernel Base | Root & SUSFS | Optional Features | Download | SHA256 |"
@@ -1327,20 +1382,18 @@ jobs:
               idx=$(( idx + 1 ))
               name="$(basename "$file")"
               zipname="${name%.zip}"
-              rest="${zipname#AK3_}"
 
-              IFS='_' read -ra parts <<< "$rest"
+              # ── Parsing robuste via helper ──────────────────────────────
+              parse_zip_name "$zipname"
+              model="$PARSED_MODEL"
+              os_version="$PARSED_OS"
+              kernel_version="$PARSED_KERNEL"
+              ksu_type="$PARSED_KSU_TYPE"
+              ksu_ver="$PARSED_KSU_VER"
+              susfs_ver="$PARSED_SUSFS_VER"
 
-              model="${parts[0]:-unknown}"
-              os_version="${parts[1]:-unknown}"
-              kernel_version="${parts[2]:-unknown}"
-              ksu_type="${parts[3]:-unknown}"
-              ksu_ver="${parts[4]:-unknown}"
-
-              susfs_ver="none"
               susfs_display="❌ none"
-              if [ "${parts[5]:-}" = "SuSFS" ]; then
-                susfs_ver="${parts[6]:-unknown}"
+              if [ "$susfs_ver" != "none" ] && [ "$susfs_ver" != "pending" ] && [ -n "$susfs_ver" ]; then
                 susfs_display="✅ ${susfs_ver}"
               fi
 
@@ -1364,7 +1417,6 @@ jobs:
             } >> 00_DOWNLOADS.md
           done
 
-          # ── Vérification des checksums ────────────────────────────────
           {
             echo "## 🔐 Verify Your Download"
             echo ""
@@ -1378,8 +1430,6 @@ jobs:
             echo ""
             echo "---"
             echo ""
-
-            # ── Apps recommandées ─────────────────────────────────────────
             echo "## 🔐 Recommended Apps"
             echo ""
             echo "| Purpose | App | Link |"
@@ -1390,8 +1440,6 @@ jobs:
             echo ""
             echo "---"
             echo ""
-
-            # ── Rollback ──────────────────────────────────────────────────
             echo "## 🧯 Rollback / Recovery"
             echo ""
             echo "If the device bootloops after flashing:"
@@ -1415,27 +1463,61 @@ jobs:
 
           declare -A device_info
 
-          for file in $(find downloaded-artifacts -maxdepth 1 -name "*.zip" -type f | sort); do
-            zipname="$(basename "$file" .zip)"
-            rest="${zipname#AK3_}"
-
+          # ── Parsing robuste du nom de ZIP (même helper inline) ────────────
+          parse_zip_name() {
+            local zipname="$1"
+            local rest="${zipname#AK3_}"
+            local -a parts
             IFS='_' read -ra parts <<< "$rest"
 
-            model="${parts[0]:-unknown}"
-            os_version="${parts[1]:-unknown}"
-            kernel_version="${parts[2]:-unknown}"
-            ksu_type_asset="${parts[3]:-unknown}"
-            ksu_ver="${parts[4]:-unknown}"
+            local model="" os_version="" kernel_version="" ksu_type="" ksu_ver=""
+            local susfs_ver="none"
+            local model_done=false
+            local i=0
 
-            if [ "${parts[5]:-}" = "SuSFS" ]; then
-              susfs_ver="${parts[6]:-unknown}"
-            else
-              susfs_ver="none"
-            fi
+            for part in "${parts[@]}"; do
+              if [ "$model_done" = "false" ]; then
+                if [[ "$part" =~ ^OOS[0-9]+$ ]] || [[ "$part" =~ ^android[0-9]+-[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+                  model_done=true
+                  os_version="$part"
+                  i=$(( i + 1 ))
+                  continue
+                fi
+                [ -n "$model" ] && model="${model}_${part}" || model="$part"
+              else
+                case $i in
+                  1) kernel_version="$part" ;;
+                  2) ksu_type="$part" ;;
+                  3) ksu_ver="$part" ;;
+                  4) [ "$part" = "SuSFS" ] && susfs_ver="pending" || true ;;
+                  5) [ "${susfs_ver}" = "pending" ] && susfs_ver="$part" || true ;;
+                esac
+                i=$(( i + 1 ))
+              fi
+            done
+
+            PARSED_MODEL="$model"
+            PARSED_OS="$os_version"
+            PARSED_KERNEL="$kernel_version"
+            PARSED_KSU_TYPE="$ksu_type"
+            PARSED_KSU_VER="$ksu_ver"
+            PARSED_SUSFS_VER="$susfs_ver"
+          }
+
+          for file in $(find downloaded-artifacts -maxdepth 1 -name "*.zip" -type f | sort); do
+            zipname="$(basename "$file" .zip)"
+
+            parse_zip_name "$zipname"
+            model="$PARSED_MODEL"
+            os_version="$PARSED_OS"
+            kernel_version="$PARSED_KERNEL"
+            ksu_type_asset="$PARSED_KSU_TYPE"
+            ksu_ver="$PARSED_KSU_VER"
+            susfs_ver="$PARSED_SUSFS_VER"
+            [ "$susfs_ver" = "pending" ] && susfs_ver="unknown"
 
             file_name="$(basename "$file")"
             full_model="${model}_${os_version}_${kernel_version}"
-
             device_info["$full_model"]="$model|$os_version|$kernel_version|$ksu_type_asset|$ksu_ver|$susfs_ver|$file_name"
           done
 
@@ -1465,75 +1547,59 @@ jobs:
           IFS='|' read -r _ _ _ _ ksu_ver_global _ _ <<< "${device_info[$first_entry]}"
 
           ksu_display_value() {
-            local input="$1"
-            local resolved="$2"
-
-            if [[ "$input" =~ ^[0-9a-fA-F]{40}$ ]]; then
-              echo "$input"
-            else
-              echo "$input ($resolved)"
-            fi
+            local input="$1" resolved="$2"
+            [[ "$input" =~ ^[0-9a-fA-F]{40}$ ]] && echo "$input" || echo "$input ($resolved)"
           }
 
           ksu_display="$(ksu_display_value "$ksu_ref" "$ksu_resolved_hash")"
 
           cat << EOF > release_notes.md
           # 📱 OnePlus Kernels • OOS/COS • ReSukiSU • SUSFS ${SUSFS_BASE_VERSION}
-          
+
           Flashable AnyKernel3 ZIPs for supported OnePlus devices.
-          
-          > ⚠️ **Important:** Match your exact **device model**, **OS version**, and **kernel base** before flashing.  
+
+          > ⚠️ **Important:** Match your exact **device model**, **OS version**, and **kernel base** before flashing.
           > The workflow uses labels like \`OOS14/OOS15/OOS16\`, **ColorOS/COS 14/15/16**.
-          
+
           ---
-          
+
           ## 📥 Downloads first
-          
-          Open this release asset:
-          
-          **➡️ \`00_DOWNLOADS.md\`**
-          
-          It contains the grouped download table with:
-          
-          - device/model;
-          - OS compatibility group;
-          - kernel base;
-          - ReSukiSU/SUSFS version;
-          - optional features;
-          - direct download link;
-          - short SHA256 checksum.
-          
+
+          Open this release asset: **➡️ \`00_DOWNLOADS.md\`**
+
+          It contains the grouped download table with device/model, OS compatibility group,
+          kernel base, ReSukiSU/SUSFS version, optional features, direct download link,
+          and short SHA256 checksum.
+
           ---
-          
+
           ## 🧾 How to read the ZIP name
-          
-          Example:
-          
-          \`AK3_OP12_OOS15_android15-6.6.30_RSKSU_31234_SuSFS_v2.2.0.zip\`
-          
+
+          Example: \`AK3_OP12_OOS15_android15-6.6.30_RSKSU_31234_SuSFS_v2.2.0.zip\`
+
           | Part | Meaning |
           |---|---|
           | \`OP12\` | Device/model family |
-          | \`OOS15\` | OS compatibility group. May also correspond to compatible COS15-based builds depending on device/source |
+          | \`OOS15\` | OS compatibility group. May also correspond to compatible COS15-based builds |
           | \`android15-6.6.30\` | Android common kernel base and kernel version |
           | \`RSKSU_31234\` | ReSukiSU type and build/version |
           | \`SuSFS_v2.2.0\` | SUSFS version included in the kernel |
-          
+
           ---
-          
+
           ## ✅ Read before flashing
-          
+
           - Download only the ZIP matching your **device**, **OS version**, and **kernel base**.
           - Do **not** flash a ZIP just because the device name looks similar.
           - Flashing the wrong kernel may cause bootloop.
           - Back up your current boot/init_boot/vendor_boot partitions.
           - Keep a stock boot/init_boot/vendor_boot image ready for rollback.
           - If switching from Magisk, APatch, KernelSU, ReSukiSU, or another fork, clean old root leftovers carefully.
-          
+
           ---
-          
+
           ## 📘 Quick installation
-          
+
           1. Open \`00_DOWNLOADS.md\`.
           2. Download the matching ZIP.
           3. Verify the checksum if possible.
@@ -1541,36 +1607,37 @@ jobs:
           5. Reboot.
           6. Install/update ReSukiSU Manager.
           7. Install the SUSFS module if you need SUSFS userspace features.
-          
+
           ---
-          
+
           ## 🔐 Recommended apps
-          
+
           | Purpose | App | Link |
           |---|---|---|
           | Root manager | ReSukiSU Manager | https://github.com/ReSukiSU/ReSukiSU/releases |
           | SUSFS userspace module | KSU SUSFS Module | https://github.com/sidex15/ksu_module_susfs/releases |
           | Kernel flashing | Kernel Flasher | https://github.com/fatalcoder524/KernelFlasher/releases |
-          
+
           ---
-          
+
           ## 📦 Release helper files
-          
+
           | File | Purpose |
           |---|---|
           | \`00_DOWNLOADS.md\` | Main grouped download index |
           | \`00_CHECKSUMS.txt\` | Full SHA256 checksums |
-          
+
           ---
-          
+
           ## 📦 Built Devices (${#device_info[@]} total)
-          
+
           | Model | OS Group | Kernel Base | Root | SUSFS | File |
           |---|---|---|---|---|---|
           EOF
 
           for full_key in $(printf '%s\n' "${!device_info[@]}" | sort); do
-            IFS='|' read -r model os_ver kernel_ver ksu_type_asset ksu_ver susfs_ver file_name <<< "${device_info[$full_key]}"
+            IFS='|' read -r model os_ver kernel_ver ksu_type_asset ksu_ver susfs_ver file_name \
+              <<< "${device_info[$full_key]}"
             asset_url="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.NEW_TAG }}/${file_name}"
 
             os_display="$os_ver"
@@ -1579,15 +1646,16 @@ jobs:
               os_display="${os_ver}/COS${os_num}"
             fi
 
-            echo "| \`${model}\` | \`${os_display}\` | \`${kernel_ver}\` | \`${ksu_type_asset}-${ksu_ver}\` | \`${susfs_ver}\` | [Download](${asset_url}) |" >> release_notes.md
+            echo "| \`${model}\` | \`${os_display}\` | \`${kernel_ver}\` | \`${ksu_type_asset}-${ksu_ver}\` | \`${susfs_ver}\` | [Download](${asset_url}) |" \
+              >> release_notes.md
           done
 
           cat << EOF >> release_notes.md
 
           ---
-          
+
           ## 🔧 Build Configuration
-          
+
           | Component | Version/Setting |
           |---|---|
           | **Root Solution** | \`ReSukiSU\` |
@@ -1599,11 +1667,11 @@ jobs:
           | **Build Timestamp Input** | \`${BUILD_TIMESTAMP_INPUT:-auto}\` |
           | **Compiler** | Clang, version may vary by device source/toolchain |
           | **Workflow Run** | [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
-          
+
           ---
-          
+
           ## 📌 SUSFS Branch Mapping
-          
+
           | Kernel Version | SUSFS Commit |
           |---|---|
           EOF
@@ -1616,106 +1684,98 @@ jobs:
           cat << EOF >> release_notes.md
 
           ---
-          
+
           ## ✨ Included Features
-          
+
           ### 🔐 Root Management
-          
+
           - **ReSukiSU** kernel-level root solution.
           - **SUSFS ${SUSFS_BASE_VERSION}** hiding/spoofing support where enabled.
           - SUSFS userspace features require the matching SUSFS module.
-          
+
           ### 🛡️ SUSFS / Privacy Features
-          
+
           Depending on device/kernel support, builds may include:
-          
-          - SUS_PATH
-          - SUS_MOUNT
-          - SUS_KSTAT
-          - SPOOF_UNAME
-          - SPOOF_CMDLINE / BOOTCONFIG
+
+          - SUS_PATH, SUS_MOUNT, SUS_KSTAT, SUS_MAP
+          - SPOOF_UNAME, SPOOF_CMDLINE / BOOTCONFIG
           - OPEN_REDIRECT
-          - SUS_MAP
           - AVC spoofing where supported
           - Ptrace leak fix for kernels below 5.16
           - Unicode path bypass fix where enabled
-          
+
           ### 🚀 Performance & Networking
-          
+
           Depending on device config, builds may include:
-          
+
           - BBR TCP congestion control
           - IP_SET and IPv6 NAT
           - TTL target support
           - LTO build optimization
           - TMPFS_XATTR and TMPFS_POSIX_ACL
           - ADIOS I/O scheduler if enabled for this workflow run
-          
+
           ### 🔧 Optional Device Features
-          
+
           Depending on device config, builds may include:
-          
+
           - HMBIRD SCX
           - Baseband Guard / BBG
           - Droidspaces
           - NTSync
           - Rust Binder support
-          
+
           ---
-          
+
           ## 🔐 Verify downloads
-          
+
           Download \`00_CHECKSUMS.txt\` and run:
-          
+
           \`\`\`bash
           sha256sum -c 00_CHECKSUMS.txt
           \`\`\`
-          
+
           ---
-          
+
           ## 🧯 Rollback / recovery
-          
+
           If the device bootloops:
-          
+
           1. Boot to fastboot/recovery.
           2. Restore your backed-up stock boot/init_boot/vendor_boot image.
           3. Reboot.
           4. Report the exact ZIP filename, device model, OS version, and kernel base.
-          
+
           ---
-          
+
           ## 📜 Changelog
-          
+
           - Built OnePlus kernel ZIPs with ReSukiSU.
           - Included SUSFS ${SUSFS_BASE_VERSION} where enabled.
-          - Improved release download organization.
-          - Added grouped download index with optional feature flags.
-          - Added SHA256 checksum file.
-          - Added direct download links in release notes.
+          - Fixed tag generation regex to avoid tonumber error on "rsksu" substring.
+          - Fixed ZIP name parsing to handle model names containing underscores.
+          - Improved release download organization with grouped index.
+          - Added SHA256 checksum file and direct download links.
           - Added OOS/COS compatibility wording for regional builds.
           - Added single-device build targeting with \`op_target_model\`.
-          - Added workflow run-name timestamp display.
-          - Fixed build timestamp output propagation.
-          - Improved ccache build system.
+          - Improved ccache build system and LTO cache.
           - Added IP_SET, IPv6 NAT, TTL, TMPFS_XATTR, TMPFS_POSIX_ACL where enabled.
           - Added Ptrace leak fix for kernels below 5.16.
-          - Added Unicode bypass fix where enabled.
-          - Added Droidspaces support where enabled.
-          - Added NTSync support where enabled.
-          - Added optional ADIOS I/O scheduler support for supported 6.1 and 6.6 kernels.
+          - Added Unicode bypass fix, Droidspaces, NTSync where enabled.
+          - Added optional ADIOS I/O scheduler support for 6.1 and 6.6 kernels.
           - Compiler optimization: ${OPTIMIZE_LEVEL}.
-          
+
           ---
-          
+
           ## 🙏 Credits
-          
+
           - **ReSukiSU Team** - root solution
           - **simonpunk** - SUSFS development
           - **OnePlus / OPPO / ColorOS kernel source contributors** - kernel source code
           - **Community contributors and testers**
-          
+
           ---
-          
+
           **⚡ Built with care for the Android kernel community**
           EOF
 
@@ -1730,8 +1790,7 @@ jobs:
           gh release create "${{ env.NEW_TAG }}" \
             --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
             --title "${{ env.RELEASE_NAME }}" \
-            --notes-file release_notes.md \
-            --draft
+            --notes-file release_notes.md
 
       - name: 📤 Upload Release Assets Dynamically
         shell: bash
@@ -1740,13 +1799,12 @@ jobs:
 
           echo "Uploading helper files..."
 
-          for helper in \
-            00_DOWNLOADS.md \
-            00_CHECKSUMS.txt; do
-
+          for helper in 00_DOWNLOADS.md 00_CHECKSUMS.txt; do
             if [ -f "$helper" ]; then
               echo "Uploading $helper..."
-              gh release upload "${{ env.NEW_TAG }}" "$helper" --clobber --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}"
+              gh release upload "${{ env.NEW_TAG }}" "$helper" \
+                --clobber \
+                --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}"
             fi
           done
 
@@ -1755,7 +1813,9 @@ jobs:
           shopt -s nullglob
           for file in ./downloaded-artifacts/*.zip; do
             echo "Uploading $file..."
-            gh release upload "${{ env.NEW_TAG }}" "$file" --clobber --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}"
+            gh release upload "${{ env.NEW_TAG }}" "$file" \
+              --clobber \
+              --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}"
           done
           shopt -u nullglob
 
@@ -1773,8 +1833,8 @@ jobs:
 
           ## 🎉 Release Created Successfully
 
-          **Tag:** [\`${{ env.NEW_TAG }}\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }})  
-          **Release:** ${{ env.RELEASE_NAME }}  
+          **Tag:** [\`${{ env.NEW_TAG }}\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }})
+          **Release:** ${{ env.RELEASE_NAME }}
           **Kernels:** ${kernel_count}
 
           ### 📘 User Download Helpers
