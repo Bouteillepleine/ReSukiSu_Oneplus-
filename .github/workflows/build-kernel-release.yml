@@ -14,10 +14,10 @@ on:
     inputs:
       make_release:
         description: |
-          Release mode.
-          • no       → artifacts only, no tag, no release
-          • tag_only → create tag only, no release (review ZIPs before publishing)
-          • release  → create tag + publish release immediately
+          Release mode:
+          no = artifacts only.
+          tag_only = create tag + upload review files.
+          release = create tag + publish release.
         required: true
         type: choice
         options:
@@ -28,11 +28,9 @@ on:
 
       op_model:
         description: |
-          OS/kernel compatibility group to build.
-          • OOS14+15+16 → all supported groups
-          • OOS15+16    → recent devices only
-          • OOS14       → older OOS14-based devices only
-          • android15-6.6 → filter by exact Android/kernel base (OOS15+16 only)
+          Build target group:
+          OOS groups = OS/COS compatibility groups.
+          androidXX-X.Y = exact Android/kernel base filter.
         required: true
         type: choice
         options:
@@ -51,28 +49,23 @@ on:
 
       op_target_model:
         description: |
-          [Optional] Filter by exact model name or prefix.
-          Leave empty to build ALL devices matching the selected group above.
-          Examples:
-            • "OP12"         → all OP12 variants (any kernel version)
-            • "OP13-CPH"     → only OP13 CPH variants
-            • "OP-NORD-4"    → only Nord 4 variants
-            • "OP12-6.1.118" → exactly that model + kernel combination
+          Optional filter. Empty = all matching configs.
+          Examples: OP12, OP13-CPH, OP-NORD-4, OP12-6.1.
+          Full version like OP12-6.1.118 requires kernel_full_version in config.
         required: false
         type: string
         default: ''
 
       ksu_options:
-        description: 'Enter ReSukiSU build json'
+        description: |
+          ReSukiSU JSON ref. One entry only.
+          Example: [{"type":"rsksu","hash":"main"}]
         required: true
         type: string
         default: '[{"type":"rsksu","hash":"main"}]'
 
       optimize_level:
-        description: |
-          Compiler optimization level applied to the kernel build.
-          • O2 → balanced, stable, recommended for most devices
-          • O3 → aggressive, faster but may cause rare instability
+        description: 'Compiler optimization: O2 = recommended, O3 = aggressive.'
         required: true
         type: choice
         options:
@@ -81,48 +74,31 @@ on:
         default: O2
 
       clean_build:
-        description: |
-          Force a clean build by disabling ccache acceleration.
-          • false → use ccache (faster, recommended)
-          • true  → full recompile from scratch (slower, use when cache is stale)
+        description: 'true = disable ccache and rebuild from scratch.'
         required: false
         type: boolean
         default: false
 
       debug:
-        description: |
-          Enable debug mode.
-          Uploads additional artifacts: vmlinux, System.map, Module.symvers,
-          build.log, install.log, ccache.log.
-          ⚠️ Significantly increases artifact size and upload time.
+        description: 'Upload extra logs/debug artifacts. Increases artifact size.'
         required: false
         type: boolean
         default: false
 
       mirror_toolchains:
-        description: |
-          Sync toolchains to the cache before building.
-          ✅ Required on the very first run of this workflow.
-          ❌ Skip on subsequent runs to save time (toolchains are cached).
+        description: 'true = sync toolchains before build; useful for first run/cache refresh.'
         required: false
         type: boolean
         default: false
 
       build_timestamp:
-        description: |
-          [Optional] Custom kernel build timestamp shown in "uname -a".
-          Format: "Tue Feb 10 10:01:02 UTC 2026"
-          Leave empty to use the current UTC time at build start.
-          Useful for reproducible/pinned builds.
+        description: 'Optional uname timestamp (ie: Tue Feb 10 10:01:02 UTC 2026). Empty = current UTC time.'
         required: false
         type: string
         default: ''
 
       enable_adios:
-        description: |
-          Enable the ADIOS I/O scheduler in the kernel.
-          Supported kernel bases: 6.1 and 6.6 only.
-          Has no effect on other kernel versions (skipped silently).
+        description: 'Enable ADIOS I/O scheduler for supported 6.1/6.6 kernels.'
         required: false
         type: boolean
         default: false
