@@ -1849,6 +1849,17 @@ jobs:
           echo "--- Final Release Notes ---"
           cat release_notes.md
 
+      - name: 📤 Upload release review files
+        if: ${{ inputs.make_release == 'tag_only' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-review-files-${{ env.NEW_TAG }}
+          path: |
+            release_notes.md
+            00_DOWNLOADS.md
+            00_CHECKSUMS.txt
+          retention-days: 14
+
       - name: 🚀 Create GitHub Release
         if: ${{ inputs.make_release == 'release' }}
         shell: bash
