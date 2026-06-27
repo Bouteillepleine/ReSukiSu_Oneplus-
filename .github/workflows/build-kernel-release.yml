@@ -241,20 +241,21 @@ jobs:
             exit 1
           fi
 
-          echo "[" > matrix.json
-          mapfile -t all_json_files < <(find configs/ -name "*.json" -print0 | xargs -0 -n1)
+          mapfile -d '' -t all_json_files < <(find configs/ -name "*.json" -print0)
 
-          for i in "${!all_json_files[@]}"; do
-            file="${all_json_files[$i]}"
-            if [ -f "$file" ]; then
-              jq -r '.' "$file" >> matrix.json
-              if [ $((i + 1)) -lt ${#all_json_files[@]} ]; then
-                echo "," >> matrix.json
-              fi
-            fi
-          done
+          if [ "${#all_json_files[@]}" -eq 0 ]; then
+            echo "::error::No config JSON files found under configs/"
+            exit 1
+          fi
 
-          echo "]" >> matrix.json
+          jq -s '
+            map(
+              if type == "array" then .[]
+              elif type == "object" then .
+              else empty
+              end
+            )
+          ' "${all_json_files[@]}" > matrix.json
 
           jq_filter="."
 
@@ -292,13 +293,17 @@ jobs:
 
           if [ -n "$target_model" ]; then
             echo "🎯 Target model filter enabled: $target_model"
-            echo "   Matching exact model OR versioned model prefix."
+            echo "   Matching exact model, model prefix, or model + kernel base/full-version where available."
 
             filtered="$(echo "$filtered" | jq -c --arg target "$target_model" '
               map(
                 select(
                   .model == $target
                   or (.model | startswith($target + "-"))
+                  or ((.model + "-" + .kernel_version) == $target)
+                  or ((.model + "-" + .android_version + "-" + .kernel_version) == $target)
+                  or ((.model + "-" + (.kernel_full_version // "")) == $target)
+                  or ((.model + "-" + .android_version + "-" + (.kernel_full_version // "")) == $target)
                 )
               )
             ')"
@@ -1286,6 +1291,12 @@ jobs:
             echo ""
             echo "> Select the ZIP matching your exact **device**, **OS version**, and **kernel base**."
             echo ""
+
+            if [ "${{ inputs.make_release }}" = "tag_only" ]; then
+              echo "> 🏷️ **Tag-only mode:** direct download links become valid only after you manually create the release and upload the assets."
+              echo ""
+            fi
+
             echo "## 🎯 Find Your ZIP in 3 Steps"
             echo ""
             echo "| Step | What to check | Where to find it |"
