@@ -797,7 +797,7 @@ jobs:
     if: ${{ inputs.mirror_toolchains }}
     uses: ./.github/workflows/mirror-toolchains.yml
     secrets: inherit
-  
+
   prepare_ccache:
     name: Prepare ccache binary (download once)
     runs-on: ubuntu-latest
@@ -831,7 +831,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Upload ccache artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ccache-binary
           path: ccache
@@ -880,10 +880,10 @@ jobs:
           sudo apt-get clean
           echo "✅ Dependencies installed"
           echo "::endgroup::"
-      
+
       - name: Get prebuilt ccache (downloaded once by prepare_ccache)
         if: ${{ inputs.clean_build == false || inputs.clean_build == 'false' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ccache-binary
           path: ccache-dl
@@ -1234,11 +1234,9 @@ jobs:
           echo "New tag: $NEW_TAG"
           echo "NEW_TAG=${NEW_TAG}" >> "$GITHUB_ENV"
 
-          # ── Résoudre le SHA du commit déclencheur (pas du checkout) ──────
           TRIGGER_SHA="${{ github.sha }}"
           echo "Tagging commit: $TRIGGER_SHA"
 
-          # ── Créer le tag via l'API REST — contourne la restriction workflow ──
           gh api \
             --method POST \
             "repos/$REPO_OWNER/$REPO_NAME/git/refs" \
@@ -1248,7 +1246,7 @@ jobs:
           echo "✅ Tag ${NEW_TAG} created via API (no git push)"
 
       - name: 📥 Download Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ./downloaded-artifacts
           merge-multiple: true
