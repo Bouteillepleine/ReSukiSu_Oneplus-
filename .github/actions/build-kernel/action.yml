@@ -4,7 +4,6 @@ inputs:
   op_config_json:
     description: 'JSON string containing full device config'
     required: true
-    type: string
 
   ksu_type:
     description: 'Select KSU Type'
@@ -14,44 +13,37 @@ inputs:
   ksu_branch_or_hash:
     description: 'ReSukiSU branch, tag, or commit hash'
     required: false
-    type: string
     default: ""
 
   susfs_commit_hash_or_branch:
     description: 'SUSFS branch or commit hash'
     required: false
-    type: string
     default: ""
 
   enable_adios:
     description: 'Enable ADIOS I/O scheduler support'
     required: false
-    type: boolean
-    default: false
+    default: 'false'
 
   build_timestamp:
     description: 'Custom kernel build timestamp shown in uname -a, e.g. "Tue Feb 10 10:01:02 UTC 2026". Leave empty to use current UTC time.'
     required: false
-    type: string
     default: ''
 
   optimize_level:
     description: 'Compiler optimization level (O2 or O3)'
     required: false
-    type: string
     default: O2
 
   clean:
     description: 'Force clean build without ccache acceleration'
     required: false
-    type: boolean
-    default: false
+    default: 'false'
 
   debug:
     description: 'Enable dumping debug related artifacts'
     required: false
-    type: boolean
-    default: false
+    default: 'false'
 
   github_token:
     description: 'GitHub Token'
@@ -3037,7 +3029,6 @@ runs:
       with:
         name: ${{ env.ZIP_NAME }}
         path: ${{ env.ARTIFACTS_FOLDER }}/${{ env.ZIP_NAME }}
-        archive: false
         compression-level: 0
         retention-days: 90
 
@@ -3049,7 +3040,6 @@ runs:
         path: |
           ${{ env.CCACHE_LOGFILE }}
           ${{ github.workspace }}/${{ env.OP_MODEL }}_${{ env.OP_OS_VERSION }}_${{ env.KERNEL_FULL_VER }}_ccache.log
-        archive: false
         compression-level: 0
         retention-days: 90
         if-no-files-found: ignore
