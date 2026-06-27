@@ -1228,7 +1228,7 @@ jobs:
               --jq "
                 [
                   .[]
-                  | select(.name | test(\"^\" + \"${TAG_PREFIX}\" + \"-r[0-9]+\$\"))
+                  | select(.name | test(\"^${TAG_PREFIX}-r[0-9]+$\"))
                 ]
                 | sort_by(
                     .name
@@ -1245,10 +1245,12 @@ jobs:
             NEW_TAG="${TAG_PREFIX}-r1"
           else
             CURRENT_N="$(echo "$LATEST_MATCHING_TAG" | grep -oE '[0-9]+$')"
+
             if [[ ! "$CURRENT_N" =~ ^[0-9]+$ ]]; then
               echo "::error::Could not extract revision number from tag: '$LATEST_MATCHING_TAG'"
               exit 1
             fi
+
             NEW_TAG="${TAG_PREFIX}-r$(( CURRENT_N + 1 ))"
           fi
 
@@ -1290,9 +1292,14 @@ jobs:
           echo "Using matrix file: $MATRIX_FILE"
 
           mkdir -p ./release-zips
+          rm -f ./release-zips/AK3_*.zip || true
 
           matrix_count="$(jq 'length' "$MATRIX_FILE")"
           echo "Selected matrix entries: $matrix_count"
+
+          echo ""
+          echo "Selected matrix:"
+          jq -r '.[] | "  - \(.model) \(.os_version) \(.android_version)-\(.kernel_version)\(if (.kernel_full_version? // "") != "" then " full=\(.kernel_full_version)" else "" end)"' "$MATRIX_FILE"
 
           mapfile -t ALL_AK3_ZIPS < <(find ./downloaded-artifacts -name "AK3_*.zip" -type f | sort)
 
@@ -1302,6 +1309,7 @@ jobs:
             exit 1
           fi
 
+          echo ""
           echo "All AK3 ZIPs found in artifacts: ${#ALL_AK3_ZIPS[@]}"
 
           parse_zip_name() {
@@ -1341,21 +1349,40 @@ jobs:
             PARSED_MODEL="$model"
             PARSED_OS="$os_version"
             PARSED_KERNEL="$kernel_version"
+            PARSED_KSU_TYPE="$ksu_type"
+            PARSED_KSU_VER="$ksu_ver"
+            PARSED_SUSFS_VER="$susfs_ver"
           }
 
           zip_matches_matrix() {
             local model="$1"
             local os_version="$2"
-            local kernel_base="$3"
+            local zip_kernel="$3"
 
             jq -e \
               --arg model "$model" \
               --arg os "$os_version" \
-              --arg kernel "$kernel_base" '
+              --arg zip_kernel "$zip_kernel" '
                 any(.[]?;
-                  .model == $model
+                  (
+                    .model == $model
+                    or (.model | startswith($model + "-"))
+                    or ($model | startswith(.model + "-"))
+                  )
                   and .os_version == $os
-                  and ((.android_version + "-" + .kernel_version) == $kernel)
+                  and (
+                    ((.android_version + "-" + .kernel_version) == $zip_kernel)
+
+                    or (
+                      $zip_kernel
+                      | startswith((.android_version + "-" + .kernel_version) + ".")
+                    )
+
+                    or (
+                      (.kernel_full_version? // "") != ""
+                      and ((.android_version + "-" + .kernel_full_version) == $zip_kernel)
+                    )
+                  )
                 )
               ' "$MATRIX_FILE" >/dev/null
           }
@@ -1363,31 +1390,42 @@ jobs:
           selected_count=0
           skipped_count=0
 
+          echo ""
+
           for file in "${ALL_AK3_ZIPS[@]}"; do
             name="$(basename "$file")"
             zipname="${name%.zip}"
 
             parse_zip_name "$zipname"
 
+            echo "Checking ZIP: $name"
+            echo "  parsed model:  $PARSED_MODEL"
+            echo "  parsed os:     $PARSED_OS"
+            echo "  parsed kernel: $PARSED_KERNEL"
+
             if zip_matches_matrix "$PARSED_MODEL" "$PARSED_OS" "$PARSED_KERNEL"; then
               cp -f "$file" "./release-zips/$name"
               selected_count=$(( selected_count + 1 ))
-              echo "✅ selected: $name"
+              echo "  ✅ selected"
             else
               skipped_count=$(( skipped_count + 1 ))
-              echo "⏭️ skipped not in selected matrix: $name"
+              echo "  ⏭️ skipped not in selected matrix"
             fi
+
+            echo ""
           done
 
           if [ "$selected_count" -eq 0 ]; then
             echo "::error::No release ZIPs matched the selected matrix."
             echo ""
             echo "Selected matrix:"
-            jq -r '.[] | "  - \(.model) \(.os_version) \(.android_version)-\(.kernel_version)"' "$MATRIX_FILE"
+            jq -r '.[] | "  - \(.model) \(.os_version) \(.android_version)-\(.kernel_version)\(if (.kernel_full_version? // "") != "" then " full=\(.kernel_full_version)" else "" end)"' "$MATRIX_FILE"
+            echo ""
+            echo "ZIPs found:"
+            printf '  - %s\n' "${ALL_AK3_ZIPS[@]##*/}"
             exit 1
           fi
 
-          echo ""
           echo "Selected release ZIPs: $selected_count"
           echo "Skipped extra ZIPs: $skipped_count"
 
@@ -1426,6 +1464,11 @@ jobs:
 
           MATRIX_FILE="${MATRIX_FILE:-$(find ./downloaded-artifacts -name "matrix.json" -type f | head -n1)}"
           mapfile -t ALL_AK3_ZIPS < <(find ./release-zips -name "AK3_*.zip" -type f | sort)
+
+          if [ -z "$MATRIX_FILE" ] || [ ! -f "$MATRIX_FILE" ]; then
+            echo "::error::matrix.json not found for downloads index."
+            exit 1
+          fi
 
           if [ "${#ALL_AK3_ZIPS[@]}" -eq 0 ]; then
             echo "::error::No selected AK3 ZIPs found in ./release-zips."
@@ -1507,19 +1550,37 @@ jobs:
           }
 
           find_matrix_row() {
-            local model="$1" os_version="$2" kernel_version="$3"
+            local model="$1"
+            local os_version="$2"
+            local zip_kernel="$3"
 
             [ -n "$MATRIX_FILE" ] && [ -f "$MATRIX_FILE" ] || return 0
 
             jq -c \
               --arg model "$model" \
               --arg os "$os_version" \
-              --arg kernel "$kernel_version" '
+              --arg zip_kernel "$zip_kernel" '
                 .[]?
                 | select(
-                    .model? == $model
+                    (
+                      .model? == $model
+                      or (.model? | startswith($model + "-"))
+                      or ($model | startswith((.model? // "") + "-"))
+                    )
                     and .os_version? == $os
-                    and ((.android_version? + "-" + .kernel_version?) == $kernel)
+                    and (
+                      ((.android_version? + "-" + .kernel_version?) == $zip_kernel)
+
+                      or (
+                        $zip_kernel
+                        | startswith((.android_version? + "-" + .kernel_version?) + ".")
+                      )
+
+                      or (
+                        (.kernel_full_version? // "") != ""
+                        and ((.android_version? + "-" + .kernel_full_version?) == $zip_kernel)
+                      )
+                    )
                   )
               ' "$MATRIX_FILE" 2>/dev/null | head -n1
           }
@@ -1543,6 +1604,7 @@ jobs:
                   i=$(( i + 1 ))
                   continue
                 fi
+
                 [ -n "$model" ] && model="${model}_${part}" || model="$part"
               else
                 case $i in
@@ -1552,6 +1614,7 @@ jobs:
                   4) [ "$part" = "SuSFS" ] && susfs_ver="pending" || true ;;
                   5) [ "${susfs_ver}" = "pending" ] && susfs_ver="$part" || true ;;
                 esac
+
                 i=$(( i + 1 ))
               fi
             done
@@ -1586,6 +1649,7 @@ jobs:
             } >> 00_DOWNLOADS.md
 
             idx=0
+
             for file in "${files[@]}"; do
               idx=$(( idx + 1 ))
               name="$(basename "$file")"
@@ -1653,7 +1717,7 @@ jobs:
             echo "If the device bootloops after flashing:"
             echo ""
             echo "1. Boot to fastboot or recovery."
-            echo "2. Flash your backed-up stock \`boot\`/\`init_boot\`/\`vendor_boot\` image."
+            echo "2. Flash your backed-up stock \`boot\`/\`init_boot\` image."
             echo "3. Reboot normally."
             echo "4. Report the exact ZIP filename, device model, OS version, and kernel base."
           } >> 00_DOWNLOADS.md
@@ -1753,7 +1817,7 @@ jobs:
           - Download only the ZIP matching your **device**, **OS version**, and **kernel base**.
           - Do **not** flash a ZIP just because the device name looks similar.
           - Flashing the wrong kernel may cause bootloop.
-          - Back up your current \`boot\`, \`init_boot\`, and \`vendor_boot\` partitions.
+          - Back up your current \`boot\`, \`init_boot\` partitions.
           - Keep a stock boot/init_boot image ready for rollback.
           - If switching from Magisk, APatch, KernelSU, ReSukiSU, or another fork, clean old root leftovers carefully.
 
@@ -1901,7 +1965,7 @@ jobs:
           If the device bootloops:
 
           1. Boot to fastboot/recovery.
-          2. Restore your backed-up stock \`boot\`, \`init_boot\`, or \`vendor_boot\` image.
+          2. Restore your backed-up stock \`boot\`, \`init_boot\` image.
           3. Reboot.
           4. Report the exact ZIP filename, device model, OS version, and kernel base.
 
