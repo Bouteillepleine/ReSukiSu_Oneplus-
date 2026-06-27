@@ -86,7 +86,7 @@ on:
         default: false
 
       mirror_toolchains:
-        description: 'true = sync toolchains before build; useful for first run/cache refresh.'
+        description: 'true = sync toolchains before build; ✅ mandotory for first run/cache only.'
         required: false
         type: boolean
         default: false
