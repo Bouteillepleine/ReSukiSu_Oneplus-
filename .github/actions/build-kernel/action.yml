@@ -2779,6 +2779,11 @@ runs:
         SUSFS_REF_LOCAL="${SUSFS_REF:-unknown}"
         FINAL_TIMESTAMP="${EFFECTIVE_BUILD_TIMESTAMP:-${BUILD_TIMESTAMP:-${{ steps.save_metadata.outputs.build_timestamp }}}}"
 
+        # ── Statut global ─────────────────────────────────────────────────
+        BUILD_STATUS_ICON="✅"
+        BUILD_STATUS_LABEL="Success"
+
+        # ── Console summary ───────────────────────────────────────────────
         {
           echo "Model: ${{ env.OP_MODEL }}"
           echo "OS Version: ${{ env.OP_OS_VERSION }}"
@@ -2828,71 +2833,192 @@ runs:
           echo "Artifact Name: ${{ env.ZIP_NAME }}"
         } | tee summary.txt
 
+        # ── GitHub Step Summary ───────────────────────────────────────────
         {
-          echo "### 🎯 Kernel Build Summary"
+          # ── 3.1 Badge de statut ─────────────────────────────────────────
+          echo "## ${BUILD_STATUS_ICON} \`${{ env.OP_MODEL }}\` — ${BUILD_STATUS_LABEL}"
+          echo ""
+          echo "> Built: \`${KERNEL_FULL_VER}\` • ReSukiSU \`${KSUVER:-unknown}\` • SUSFS \`${SUSVER:-none}\` • \`${FINAL_TIMESTAMP}\`"
+          echo ""
+          echo "---"
+          echo ""
+
+          # ── Kernel & Root ───────────────────────────────────────────────
+          echo "### 🎯 Kernel & Root"
           echo ""
           echo "| Metric | Value |"
           echo "|--------|-------|"
-          echo "| **Model** | ${{ env.OP_MODEL }} |"
-          echo "| **OS Version** | ${{ env.OP_OS_VERSION }} |"
-          echo "| **Kernel Version** | ${{ steps.save_metadata.outputs.kernel_version }} |"
+          echo "| **Model** | \`${{ env.OP_MODEL }}\` |"
+          echo "| **OS Version** | \`${{ env.OP_OS_VERSION }}\` |"
+          echo "| **Kernel Version** | \`${{ steps.save_metadata.outputs.kernel_version }}\` |"
           echo "| **Kernel Uname** | \`${{ env.KERNEL_UNAME }}\` |"
           echo "| **Build Timestamp** | \`${FINAL_TIMESTAMP}\` |"
-          echo "| **Build User** | ${{ env.BUILD_USER }} |"
-          echo "| **Build Host** | ${{ env.BUILD_HOST }} |"
-          echo "| **ReSukiSU Version** | ${KSUVER:-unknown} |"
+          echo "| **Build User** | \`${{ env.BUILD_USER }}\` |"
+          echo "| **Build Host** | \`${{ env.BUILD_HOST }}\` |"
+          echo "| **ReSukiSU Version** | \`${KSUVER:-unknown}\` |"
 
           if [ "$KSU_SHA" != "unknown" ]; then
             echo "| **ReSukiSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/ReSukiSU/ReSukiSU/commit/$KSU_SHA) |"
           else
-            echo "| **ReSukiSU Commit** | unknown |"
+            echo "| **ReSukiSU Commit** | \`unknown\` |"
           fi
 
           if [ "${OP_SUSFS:-false}" = "true" ]; then
-            echo "| **SUSFS Version** | ${SUSVER:-unknown} |"
+            echo "| **SUSFS Version** | \`${SUSVER:-unknown}\` |"
             echo "| **SUSFS Ref** | \`${SUSFS_REF_LOCAL}\` |"
 
             if [ "$SUSFS_SHA" != "unknown" ]; then
               echo "| **SUSFS Commit** | [\`${SUSFS_SHA:0:8}\`](https://gitlab.com/simonpunk/susfs4ksu/-/commit/$SUSFS_SHA) |"
             else
-              echo "| **SUSFS Commit** | unknown |"
+              echo "| **SUSFS Commit** | \`unknown\` |"
             fi
           fi
 
           echo ""
+
+          # ── OnePlus Features ────────────────────────────────────────────
           echo "### 🔧 OnePlus Features"
           echo ""
           echo "| Feature | Status |"
           echo "|---------|--------|"
-          echo "| **BBR** | ${{ env.OP_BBR }} |"
-          echo "| **BBG** | ${{ env.OP_BBG }} |"
-          echo "| **HMBIRD SCX** | ${{ env.OP_HMBIRD }} |"
-          echo "| **TTL** | ${{ env.OP_TTL }} |"
-          echo "| **IP_SET & IPv6 NAT** | ${{ env.OP_IP_SET }} |"
-          echo "| **Unicode Fix** | ${{ env.OP_UNICODE }} |"
-          echo "| **NTSync** | ${{ env.OP_NTSYNC }} |"
-          echo "| **Droidspaces** | ${{ env.OP_DS }} |"
-          echo "| **ADIOS I/O Scheduler** | ${{ inputs.enable_adios }} |"
+
+          _feat() {
+            local label="$1" val="$2"
+            local icon="❌"
+            [ "$val" = "true" ] && icon="✅"
+            echo "| **${label}** | ${icon} |"
+          }
+
+          _feat "BBR"                  "${{ env.OP_BBR }}"
+          _feat "BBG"                  "${{ env.OP_BBG }}"
+          _feat "HMBIRD SCX"           "${{ env.OP_HMBIRD }}"
+          _feat "TTL"                  "${{ env.OP_TTL }}"
+          _feat "IP_SET & IPv6 NAT"    "${{ env.OP_IP_SET }}"
+          _feat "Unicode Fix"          "${{ env.OP_UNICODE }}"
+          _feat "NTSync"               "${{ env.OP_NTSYNC }}"
+          _feat "Droidspaces"          "${{ env.OP_DS }}"
+          _feat "ADIOS I/O Scheduler"  "${{ inputs.enable_adios }}"
 
           echo ""
+
+          # ── Build Metrics ───────────────────────────────────────────────
           echo "### 📊 Build Metrics"
           echo ""
           echo "| Metric | Value |"
           echo "|--------|-------|"
-          echo "| **Optimization** | ${{ inputs.optimize_level }} |"
-          echo "| **Clean Build** | ${{ inputs.clean }} |"
-          echo "| **Build Time** | ${{ steps.collect_stats.outputs.build_time }}s |"
+          echo "| **Optimization** | \`${{ inputs.optimize_level }}\` |"
+          echo "| **Clean Build** | \`${{ inputs.clean }}\` |"
+          echo "| **Build Time** | \`${{ steps.collect_stats.outputs.build_time }}s\` |"
+          echo "| **Compiler Warnings** | \`${{ steps.collect_stats.outputs.warnings_count }}\` |"
 
           if [ "${{ inputs.clean }}" = "false" ]; then
-            echo "| **ccache Hit Rate** | ${{ steps.ccache_stats.outputs.hit_rate }} |"
-            echo "| **ccache Direct Rate** | ${{ steps.ccache_stats.outputs.direct_rate }} |"
+            echo "| **ccache Hit Rate** | \`${{ steps.ccache_stats.outputs.hit_rate }}\` |"
+            echo "| **ccache Direct Rate** | \`${{ steps.ccache_stats.outputs.direct_rate }}\` |"
+          else
+            echo "| **ccache** | \`disabled (clean build)\` |"
           fi
 
-          echo "| **Image SHA256** | \`${{ steps.collect_stats.outputs.image_sha256 }}\` |"
-          echo "| **Warnings** | ${{ steps.collect_stats.outputs.warnings_count }} |"
           echo "| **Compiler** | \`${CLANG_VERSION:-unknown}\` |"
-          echo "| **Artifact Name** | \`${{ env.ZIP_NAME }}\` |"
-          echo "| **AnyKernel3 SHA256** | \`${{ steps.create_zip.outputs.zip_sha256 }}\` |"
+          echo ""
+
+          # ── Checksums ───────────────────────────────────────────────────
+          echo "### 🔐 Checksums"
+          echo ""
+          echo "| File | SHA256 |"
+          echo "|------|--------|"
+          echo "| **kernel Image** | \`${{ steps.collect_stats.outputs.image_sha256 }}\` |"
+          echo "| **AnyKernel3 ZIP** | \`${{ steps.create_zip.outputs.zip_sha256 }}\` |"
+          echo ""
+
+          # ── 3.2 Quick Flash Guide ────────────────────────────────────────
+          echo "### ⚡ Quick Flash Guide"
+          echo ""
+          echo "| Step | Action |"
+          echo "|------|--------|"
+          echo "| **1** | Download \`${{ env.ZIP_NAME }}\` from the workflow artifacts |"
+          echo "| **2** | Verify checksum: \`sha256sum ${{ env.ZIP_NAME }}\` → must match \`${{ steps.create_zip.outputs.zip_sha256 }}\` |"
+          echo "| **3** | Flash via [Kernel Flasher](https://github.com/fatalcoder524/KernelFlasher/releases) |"
+          echo "| **4** | Install [ReSukiSU Manager](https://github.com/ReSukiSU/ReSukiSU/releases) |"
+
+          if [ "${OP_SUSFS:-false}" = "true" ]; then
+            echo "| **5** | Install [SUSFS Module](https://github.com/sidex15/ksu_module_susfs/releases) for userspace SUSFS features |"
+          fi
+
+          echo ""
+          echo "> ⚠️ **Rollback:** Keep a backup of your stock \`boot\`/\`init_boot\` partition before flashing."
+          echo ""
+
+          # ── 3.3 Sections détaillées collapsées ──────────────────────────
+          echo "---"
+          echo ""
+
+          echo "<details>"
+          echo "<summary>🔧 Full KSU/SUSFS defconfig entries (click to expand)</summary>"
+          echo ""
+          echo '```'
+          grep -E '^CONFIG_KSU' \
+            "$COMMON_KERNEL_FOLDER/out/.config" 2>/dev/null \
+            || grep -E '^CONFIG_KSU' \
+                 "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" 2>/dev/null \
+            || echo "(config not available)"
+          echo '```'
+          echo "</details>"
+          echo ""
+
+          echo "<details>"
+          echo "<summary>📋 Full build environment (click to expand)</summary>"
+          echo ""
+          echo "| Variable | Value |"
+          echo "|----------|-------|"
+          echo "| \`ANDROID_VER\` | \`${{ env.ANDROID_VER }}\` |"
+          echo "| \`KERNEL_VER\` | \`${{ env.KERNEL_VER }}\` |"
+          echo "| \`KERNEL_FULL_VER\` | \`${{ env.KERNEL_FULL_VER }}\` |"
+          echo "| \`OP_SOC\` | \`${{ env.OP_SOC }}\` |"
+          echo "| \`OP_BRANCH\` | \`${{ env.OP_BRANCH }}\` |"
+          echo "| \`OP_LTO\` | \`${{ env.OP_LTO }}\` |"
+          echo "| \`NPROC\` | \`${{ env.NPROC }}\` |"
+          echo "| \`CLANG_VERSION\` | \`${CLANG_VERSION:-unknown}\` |"
+          echo "| \`BUILD_USER\` | \`${{ env.BUILD_USER }}\` |"
+          echo "| \`BUILD_HOST\` | \`${{ env.BUILD_HOST }}\` |"
+          echo "| \`SOURCE_DATE_EPOCH\` | \`${SOURCE_DATE_EPOCH:-unknown}\` |"
+          echo "</details>"
+          echo ""
+
+          if [ -f "${TIMING_LOG:-/dev/null}" ]; then
+            echo "<details>"
+            echo "<summary>⏱️ Build timing breakdown (click to expand)</summary>"
+            echo ""
+            echo "| Step | Duration | Status |"
+            echo "|------|----------|--------|"
+
+            TOTAL_TIME=0
+            while IFS=',' read -r label duration status; do
+              [ "$label" = "step_name" ] && continue
+              label="${label//\"/}"
+              icon="✅"
+              [ "$status" = "failed" ] && icon="❌"
+              echo "| \`$label\` | \`${duration}s\` | $icon |"
+              TOTAL_TIME="$(awk -v t="$TOTAL_TIME" -v d="$duration" \
+                'BEGIN{printf "%.2f", t+d}')"
+            done < "$TIMING_LOG"
+
+            echo "| **TOTAL** | **\`${TOTAL_TIME}s\`** | |"
+            echo ""
+            echo "</details>"
+            echo ""
+          fi
+
+          echo "<details>"
+          echo "<summary>📦 Artifact details (click to expand)</summary>"
+          echo ""
+          echo "| Field | Value |"
+          echo "|-------|-------|"
+          echo "| **ZIP Name** | \`${{ env.ZIP_NAME }}\` |"
+          echo "| **ZIP SHA256** | \`${{ steps.create_zip.outputs.zip_sha256 }}\` |"
+          echo "| **Image SHA256** | \`${{ steps.collect_stats.outputs.image_sha256 }}\` |"
+          echo "| **Kernel Uname** | \`${{ env.KERNEL_UNAME }}\` |"
+          echo "</details>"
+
         } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload Debug Artifacts
