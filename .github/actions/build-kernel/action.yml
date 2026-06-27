@@ -1016,7 +1016,17 @@ runs:
         trap 'rm -f "$RSKSU_SETUP_SCRIPT"' EXIT
 
         echo "Downloading ReSukiSU setup script..."
-        if ! curl --fail --location --proto '=https' --tlsv1.2 -LSs \
+        if ! curl \
+          --fail \
+          --location \
+          --proto '=https' \
+          --tlsv1.2 \
+          --max-time 120 \
+          --connect-timeout 20 \
+          --retry 3 \
+          --retry-delay 5 \
+          --retry-all-errors \
+          -LSs \
           "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" \
           -o "$RSKSU_SETUP_SCRIPT"; then
           echo "::error::Failed to download ReSukiSU setup.sh"
@@ -1077,7 +1087,7 @@ runs:
         DEFCONFIG="$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
         mkdir -p "$(dirname "$DEFCONFIG")"
         touch "$DEFCONFIG"
-        
+
         TAG_NAME="$(git -C KernelSU describe --tags --abbrev=0 2>/dev/null || echo v1.0.0)"
 
         sed -i \
