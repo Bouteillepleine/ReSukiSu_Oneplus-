@@ -217,7 +217,7 @@ jobs:
             exit 1
           fi
 
-          mapfile -d '' -t all_json_files < <(find configs/ -name "*.json" -print0)
+          mapfile -d '' -t all_json_files < <(find configs/ -name "*.json" -print0 | sort -z)
 
           if [ "${#all_json_files[@]}" -eq 0 ]; then
             echo "::error::No config JSON files found under configs/"
@@ -227,16 +227,56 @@ jobs:
           echo "🔎 Found ${#all_json_files[@]} config JSON file(s)"
           echo "🔎 Validating config JSON files..."
 
+          bad_json_found=false
+
           for file in "${all_json_files[@]}"; do
-            if ! jq empty "$file" >/dev/null 2>"/tmp/jq_error.log"; then
+            echo "Checking JSON: $file"
+
+            if ! jq_error="$(jq empty "$file" 2>&1 >/dev/null)"; then
+              bad_json_found=true
+
+              echo ""
               echo "::error file=${file}::Invalid JSON in config file"
-              echo "---- jq error for $file ----"
-              cat /tmp/jq_error.log
-              echo "---- first 80 lines of $file ----"
-              nl -ba "$file" | sed -n '1,80p'
-              exit 1
+              echo "❌ Invalid JSON: $file"
+              echo ""
+              echo "---- jq error ----"
+              echo "$jq_error"
+              echo ""
+
+              line_number="$(
+                echo "$jq_error" \
+                  | sed -nE 's/.* at line ([0-9]+), column ([0-9]+).*/\1/p' \
+                  | head -n1
+              )"
+
+              if [[ "$line_number" =~ ^[0-9]+$ ]]; then
+                start=$(( line_number > 10 ? line_number - 10 : 1 ))
+                end=$(( line_number + 10 ))
+
+                echo "---- context around line ${line_number} in ${file} ----"
+                nl -ba "$file" | sed -n "${start},${end}p"
+              else
+                echo "---- first 120 lines of ${file} ----"
+                nl -ba "$file" | sed -n '1,120p'
+              fi
+
+              echo ""
+              echo "Common causes:"
+              echo "  - Unquoted version number, e.g. kernel_full_version: 6.1.118"
+              echo "  - JSON comments // or /* */"
+              echo "  - Trailing comma"
+              echo "  - Unquoted strings like OOS15 or android15"
+              echo ""
+
+              break
             fi
           done
+
+          if [ "$bad_json_found" = "true" ]; then
+            exit 1
+          fi
+
+          echo "✅ All config JSON files are valid"
 
           jq -s '
             map(
