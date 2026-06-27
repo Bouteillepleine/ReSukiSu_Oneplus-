@@ -435,7 +435,6 @@ jobs:
             HASH_QUERY="{ project(fullPath: \"${GITLAB_PROJECT_PATH}\") { repository { ch: commit(ref: \"${user_val}\") { sha } } } }"
             RELEASE_QUERY="{ project(fullPath: \"${GITLAB_PROJECT_PATH}\") { repository { ch: commit(ref: \"${user_val}\") { sha } blobs(paths: [\"kernel_patches/include/linux/susfs.h\"], ref: \"${user_val}\") { nodes { rawBlob } } } } }"
 
-            # ── Résoudre SUSFS version si tag_only ou release ────────────────
             if [ "${{ inputs.make_release }}" = "release" ] || [ "${{ inputs.make_release }}" = "tag_only" ]; then
               GL_QUERY="$RELEASE_QUERY"
             else
@@ -799,16 +798,59 @@ jobs:
     uses: ./.github/workflows/mirror-toolchains.yml
     secrets: inherit
 
+  # ── NEW: download ccache binary once, share via artifact ──────────────────
+  prepare_ccache:
+    name: Prepare ccache binary (download once)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download custom ccache once
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "::group::Download ccache"
+          url="https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/ccache/ccache-x86-64"
+          ok=0
+          for attempt in 1 2 3 4 5 6; do
+            if curl -LfsS \
+              --connect-timeout 30 \
+              --max-time 120 \
+              -H "User-Agent: Mozilla/5.0" \
+              "$url" -o ccache && [ -s ccache ]; then
+              ok=1
+              break
+            fi
+            echo "attempt $attempt failed (GitHub raw 504/throttle); backing off..."
+            sleep $(( attempt * 5 + RANDOM % 6 ))
+          done
+          if [ "$ok" = 1 ]; then
+            chmod +x ccache
+            echo "✅ downloaded ccache once for all matrix jobs"
+          else
+            echo "::warning::custom ccache download failed; matrix jobs will fall back to the apt ccache"
+            rm -f ccache
+          fi
+          echo "::endgroup::"
+
+      - name: Upload ccache artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccache-binary
+          path: ccache
+          retention-days: 1
+          if-no-files-found: warn
+
   build:
     name: build (${{ matrix.model }}, ${{ matrix.soc }}, ${{ matrix.branch }}, ${{ matrix.manifest }}, ${{ matrix.android_version }}, ${{ matrix.kernel_version }}, ${{ matrix.os_version }}, ${{ matrix.ksu_type }})
     needs:
       - set-op-model
       - mirror_toolchain
+      - prepare_ccache
     if: |
       always() &&
       !cancelled() &&
       needs.set-op-model.result == 'success' &&
-      contains(fromJSON('["success","skipped"]'), needs.mirror_toolchain.result)
+      contains(fromJSON('["success","skipped"]'), needs.mirror_toolchain.result) &&
+      contains(fromJSON('["success","skipped"]'), needs.prepare_ccache.result)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -840,13 +882,39 @@ jobs:
           echo "✅ Dependencies installed"
           echo "::endgroup::"
 
-      - name: Install ccache with ECS by cctv18
+      # ── NEW: install from shared artifact first, fall back to per-job download ──
+      - name: Get prebuilt ccache (downloaded once by prepare_ccache)
+        if: ${{ inputs.clean_build == false || inputs.clean_build == 'false' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ccache-binary
+          path: ccache-dl
+        continue-on-error: true
+
+      - name: Install ccache (shared artifact → ECS fallback → apt)
         shell: bash
         if: ${{ inputs.clean_build == false || inputs.clean_build == 'false' }}
         run: |
-          set -euo pipefail
-          echo "::group::Install ccache with ECS"
+          set -uo pipefail
+          echo "::group::Install ccache"
 
+          # ── Priority 1: shared artifact from prepare_ccache ──────────────
+          if [ -s ccache-dl/ccache ]; then
+            chmod +x ccache-dl/ccache
+            if file ccache-dl/ccache | grep -qiE 'ELF|executable' && \
+               ccache-dl/ccache --version >/dev/null 2>&1; then
+              sudo install -m 0755 ccache-dl/ccache /usr/bin/ccache
+              echo "✅ installed custom ccache from shared artifact"
+              rm -rf ccache-dl
+              echo "[DEBUG] ccache version: $(ccache --version | head -1)"
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::warning::shared artifact binary invalid; trying per-job download"
+          fi
+          rm -rf ccache-dl
+
+          # ── Priority 2: per-job download (fallback) ───────────────────────
           CUSTOM_CCACHE_URLS=(
             "https://raw.githubusercontent.com/WildKernels/kernel_patches/main/ccache/ccache-x86-64"
             "https://github.com/WildKernels/kernel_patches/raw/main/ccache/ccache-x86-64"
@@ -857,72 +925,48 @@ jobs:
           TMP_CCACHE="$TMP_DIR/ccache"
           CUSTOM_CCACHE_OK=false
 
-          cleanup() {
-            rm -rf "$TMP_DIR" || true
-          }
+          cleanup() { rm -rf "$TMP_DIR" || true; }
           trap cleanup EXIT
 
           for url in "${CUSTOM_CCACHE_URLS[@]}"; do
-            echo "Trying custom ccache URL: $url"
+            echo "Trying per-job ccache URL: $url"
             rm -f "$TMP_CCACHE"
 
             if curl -LfsS \
-              --retry 8 \
-              --retry-delay 10 \
-              --retry-max-time 300 \
+              --retry 5 \
+              --retry-delay 8 \
+              --retry-max-time 180 \
               --retry-all-errors \
               --connect-timeout 30 \
-              --max-time 300 \
-              --tcp-fastopen \
+              --max-time 180 \
               -H "User-Agent: Mozilla/5.0" \
               -H "Accept: application/octet-stream,*/*" \
-              "$url" \
-              -o "$TMP_CCACHE"; then
-
-              if [ ! -s "$TMP_CCACHE" ]; then
-                echo "::warning::Downloaded custom ccache is empty from $url"
-                continue
-              fi
+              "$url" -o "$TMP_CCACHE" && [ -s "$TMP_CCACHE" ]; then
 
               chmod +x "$TMP_CCACHE"
-              file "$TMP_CCACHE" || true
-
-              if ! file "$TMP_CCACHE" | grep -qiE 'ELF|executable'; then
-                echo "::warning::Downloaded file is not an executable binary from $url"
-                continue
-              fi
-
-              if "$TMP_CCACHE" --version; then
-                echo "✅ Custom ECS ccache binary is valid"
+              if file "$TMP_CCACHE" | grep -qiE 'ELF|executable' && \
+                 "$TMP_CCACHE" --version >/dev/null 2>&1; then
                 sudo install -m 0755 "$TMP_CCACHE" /usr/bin/ccache
                 CUSTOM_CCACHE_OK=true
+                echo "✅ Custom ECS ccache installed from per-job download"
                 break
-              else
-                echo "::warning::Downloaded custom ccache failed --version from $url"
               fi
-            else
-              echo "::warning::Failed to download custom ccache from $url"
             fi
-
             sleep 3
           done
 
+          # ── Priority 3: apt ccache (already installed) ────────────────────
           if [ "$CUSTOM_CCACHE_OK" != "true" ]; then
-            echo "::warning::Custom ECS ccache unavailable. Falling back to apt/system ccache."
-
-            if ! command -v ccache >/dev/null 2>&1 || ! ccache --version >/dev/null 2>&1; then
-              sudo apt-get -o Acquire::Retries=3 update -qq
-              sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ccache
-            fi
+            echo "::warning::Custom ccache unavailable. Using apt ccache."
           fi
 
           if ! command -v ccache >/dev/null 2>&1 || ! ccache --version >/dev/null 2>&1; then
-            echo "::error::ccache is still unavailable after fallback"
+            echo "::error::ccache is still unavailable after all fallbacks"
             exit 1
           fi
 
           echo "[DEBUG] ccache path: $(command -v ccache)"
-          ccache --version || true
+          ccache --version | head -1 || true
           echo "::endgroup::"
 
       - name: ♻️ Configure ccache & LTO cache (bounded)
@@ -1713,6 +1757,7 @@ jobs:
           - LTO build optimization
           - TMPFS_XATTR and TMPFS_POSIX_ACL
           - ADIOS I/O scheduler if enabled for this workflow run
+          - Memory, TCP, F2FS, CPU scheduler and I/O performance patches
 
           ### 🔧 Optional Device Features
 
@@ -1758,11 +1803,13 @@ jobs:
           - Added SHA256 checksum file and direct download links.
           - Added OOS/COS compatibility wording for regional builds.
           - Added single-device build targeting with \`op_target_model\`.
-          - Improved ccache build system and LTO cache.
+          - Improved ccache build system: shared artifact via prepare_ccache job eliminates parallel throttling.
+          - Added LTO cache.
           - Added IP_SET, IPv6 NAT, TTL, TMPFS_XATTR, TMPFS_POSIX_ACL where enabled.
           - Added Ptrace leak fix for kernels below 5.16.
           - Added Unicode bypass fix, Droidspaces, NTSync where enabled.
           - Added optional ADIOS I/O scheduler support for 6.1 and 6.6 kernels.
+          - Added performance patches: memory, TCP, F2FS, CPU scheduler, I/O tuning.
           - Compiler optimization: ${OPTIMIZE_LEVEL}.
 
           ---
@@ -1906,3 +1953,88 @@ jobs:
             echo "- \`$name\` (${size_mb} MB)" >> "$GITHUB_STEP_SUMMARY"
           done
           shopt -u nullglob
+
+      - name: 📱 Send Telegram Notification
+        if: ${{ inputs.make_release == 'release' && success() }}
+        shell: bash
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          echo "::group::Telegram Notification"
+
+          if [ -z "${TG_BOT_TOKEN:-}" ] || [ -z "${TG_CHAT_ID:-}" ]; then
+            echo "⚠️ Telegram secrets not configured. Skipping."
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          shopt -s nullglob
+          ZIPS=(./downloaded-artifacts/*.zip)
+          shopt -u nullglob
+          ZIP_COUNT=${#ZIPS[@]}
+
+          if [ "$ZIP_COUNT" -eq 0 ]; then
+            MODELS="None"
+            OS_VERS="None"
+            KSU_VERS="Unknown"
+          else
+            MODELS=$(printf "%s\n" "${ZIPS[@]}" \
+              | awk -F'/' '{print $NF}' \
+              | awk -F'_' '{print $2}' \
+              | sort -u | paste -sd ", " -)
+            OS_VERS=$(printf "%s\n" "${ZIPS[@]}" \
+              | awk -F'/' '{print $NF}' \
+              | awk -F'_' '{print $3}' \
+              | sort -u | paste -sd ", " -)
+            KSU_VERS=$(printf "%s\n" "${ZIPS[@]}" \
+              | awk -F'/' '{print $NF}' \
+              | awk -F'_' '{print $6}' \
+              | sort -u | paste -sd ", " -)
+          fi
+
+          MSG_TEXT="🚀 <b>OnePlus Kernel Build Successful!</b>
+          ━━━━━━━━━━━━━━━━━━
+          <b>🏷️ Release Tag:</b> <code>${{ env.NEW_TAG }}</code>
+          <b>🔐 Root Solution:</b> ReSukiSU (v${KSU_VERS})
+          <b>🛡️ SUSFS Version:</b> ${{ env.SUSFS_BASE_VERSION }}
+          <b>⚙️ Optimization:</b> ${{ inputs.optimize_level }} | Clean: ${{ inputs.clean_build }}
+          ━━━━━━━━━━━━━━━━━━
+          <b>📦 Total Packages:</b> ${ZIP_COUNT} zips
+          <b>📱 Supported Models:</b> ${MODELS}
+          <b>💻 Supported OS:</b> ${OS_VERS}
+          ━━━━━━━━━━━━━━━━━━
+          👉 <a href=\"${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }}\"><b>📥 GET YOUR KERNEL HERE</b></a>"
+
+          IFS=' ,' read -r -a CHAT_IDS <<< "$TG_CHAT_ID"
+
+          for ID in "${CHAT_IDS[@]}"; do
+            [ -z "$ID" ] && continue
+
+            PAYLOAD=$(jq -n \
+              --arg chat_id "$ID" \
+              --arg text "$MSG_TEXT" \
+              '{
+                chat_id: $chat_id,
+                parse_mode: "HTML",
+                disable_web_page_preview: true,
+                text: $text
+              }')
+
+            RESPONSE=$(curl -s -w "\n%{http_code}" \
+              -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD")
+
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)
+
+            if [ "$HTTP_CODE" -eq 200 ]; then
+              echo "✅ Telegram notification sent to $ID"
+            else
+              echo "::warning::Telegram failed for $ID (HTTP $HTTP_CODE): $RESPONSE_BODY"
+            fi
+          done
+
+          echo "::endgroup::"
