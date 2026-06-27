@@ -1255,16 +1255,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          # ── FIX 1: only checksum AK3_ kernel ZIPs, exclude ccache-binary ──
-          if ! compgen -G "./downloaded-artifacts/AK3_*.zip" > /dev/null; then
+          mapfile -t AK3_ZIPS < <(find ./downloaded-artifacts -name "AK3_*.zip" -type f | sort)
+
+          if [ "${#AK3_ZIPS[@]}" -eq 0 ]; then
             echo "::error::No AK3 ZIP artifacts found."
-            find ./downloaded-artifacts -maxdepth 2 -type f -print || true
+            find ./downloaded-artifacts -maxdepth 4 -type f | sort || true
             exit 1
           fi
 
-          cd downloaded-artifacts
-          sha256sum AK3_*.zip | sort -k2 > ../00_CHECKSUMS.txt
-          cd ..
+          echo "Found ${#AK3_ZIPS[@]} AK3 ZIP(s):"
+          printf '  %s\n' "${AK3_ZIPS[@]}"
+
+          sha256sum "${AK3_ZIPS[@]}" \
+            | awk '{n=split($2,a,"/"); print $1"  "a[n]}' \
+            | sort -k2 > 00_CHECKSUMS.txt
 
           echo "Generated 00_CHECKSUMS.txt:"
           cat 00_CHECKSUMS.txt
@@ -1274,7 +1278,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          MATRIX_FILE="./downloaded-artifacts/matrix.json"
+          MATRIX_FILE="$(find ./downloaded-artifacts -name "matrix.json" -type f | head -n1)"
+          mapfile -t ALL_AK3_ZIPS < <(find ./downloaded-artifacts -name "AK3_*.zip" -type f | sort)
 
           {
             echo "# 📥 OnePlus Kernel Downloads"
@@ -1343,16 +1348,16 @@ jobs:
             echo "$features"
           }
 
-          # ── FIX 2: robust jq with ? and 2>/dev/null ──────────────────────
           find_matrix_row() {
             local model="$1" os_version="$2" kernel_version="$3"
 
-            [ -f "$MATRIX_FILE" ] || return 0
+            [ -n "$MATRIX_FILE" ] && [ -f "$MATRIX_FILE" ] || return 0
 
             jq -c \
               --arg model "$model" \
               --arg os "$os_version" \
-              --arg kernel "$kernel_version" '.[]?
+              --arg kernel "$kernel_version" '
+                .[]?
                 | select(
                     (.model? == $model or (.model? | startswith($model + "-")) or ($model | startswith((.model? // "") + "-")))
                     and .os_version? == $os
@@ -1403,8 +1408,8 @@ jobs:
 
           for os in OOS16 OOS15 OOS14; do
             mapfile -t files < <(
-              find downloaded-artifacts -maxdepth 1 -type f \
-                -name "AK3_*_${os}_*.zip" | sort
+              printf '%s\n' "${ALL_AK3_ZIPS[@]}" \
+                | grep "_${os}_" | sort
             )
 
             [ "${#files[@]}" -eq 0 ] && continue
@@ -1547,8 +1552,9 @@ jobs:
             PARSED_SUSFS_VER="$susfs_ver"
           }
 
-          # ── FIX 3: only process AK3_ ZIPs, exclude ccache-binary ─────────
-          for file in $(find downloaded-artifacts -maxdepth 1 -name "AK3_*.zip" -type f | sort); do
+          mapfile -t ALL_AK3_ZIPS < <(find ./downloaded-artifacts -name "AK3_*.zip" -type f | sort)
+
+          for file in "${ALL_AK3_ZIPS[@]}"; do
             zipname="$(basename "$file" .zip)"
 
             parse_zip_name "$zipname"
@@ -1812,7 +1818,8 @@ jobs:
           - Added optional ADIOS I/O scheduler support for 6.1 and 6.6 kernels.
           - Added performance patches: memory, TCP, F2FS, CPU scheduler, I/O tuning.
           - Compiler optimization: ${OPTIMIZE_LEVEL}.
-          - Fixed ccache-binary appearing in release device list and checksums.
+          - Fixed ccache-binary and extracted kernel files appearing in release assets.
+          - Fixed AK3 ZIP detection with recursive find for merge-multiple artifact layout.
 
           ---
 
@@ -1849,7 +1856,6 @@ jobs:
           set -euo pipefail
 
           echo "Uploading helper files..."
-
           for helper in 00_DOWNLOADS.md 00_CHECKSUMS.txt; do
             if [ -f "$helper" ]; then
               echo "Uploading $helper..."
@@ -1860,16 +1866,19 @@ jobs:
           done
 
           echo "Uploading kernel ZIPs..."
+          mapfile -t UPLOAD_ZIPS < <(find ./downloaded-artifacts -name "AK3_*.zip" -type f | sort)
 
-          # ── FIX: only upload AK3_ kernel ZIPs, not ccache-binary ─────────
-          shopt -s nullglob
-          for file in ./downloaded-artifacts/AK3_*.zip; do
-            echo "Uploading $file..."
+          if [ "${#UPLOAD_ZIPS[@]}" -eq 0 ]; then
+            echo "::error::No AK3 ZIPs found to upload."
+            exit 1
+          fi
+
+          for file in "${UPLOAD_ZIPS[@]}"; do
+            echo "Uploading $(basename "$file")..."
             gh release upload "${{ env.NEW_TAG }}" "$file" \
               --clobber \
               --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}"
           done
-          shopt -u nullglob
 
       - name: 🏷️ Tag-only summary
         if: ${{ inputs.make_release == 'tag_only' }}
@@ -1925,7 +1934,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          kernel_count="$(find ./downloaded-artifacts -maxdepth 1 -name "AK3_*.zip" -type f | wc -l)"
+          mapfile -t SUMMARY_ZIPS < <(find ./downloaded-artifacts -name "AK3_*.zip" -type f | sort)
+          kernel_count="${#SUMMARY_ZIPS[@]}"
 
           cat >> "$GITHUB_STEP_SUMMARY" << EOF
 
@@ -1948,11 +1958,9 @@ jobs:
           echo "- \`00_DOWNLOADS.md\` — grouped downloads by OS compatibility group" >> "$GITHUB_STEP_SUMMARY"
           echo "- \`00_CHECKSUMS.txt\` — SHA256 checksums" >> "$GITHUB_STEP_SUMMARY"
 
-          shopt -s nullglob
-          for zip in ./downloaded-artifacts/AK3_*.zip; do
+          for zip in "${SUMMARY_ZIPS[@]}"; do
             name="$(basename "$zip")"
             size="$(stat -c%s "$zip")"
             size_mb="$(awk -v s="$size" 'BEGIN{printf "%.2f", s / 1024 / 1024}')"
             echo "- \`$name\` (${size_mb} MB)" >> "$GITHUB_STEP_SUMMARY"
           done
-          shopt -u nullglob
