@@ -217,7 +217,7 @@ jobs:
             exit 1
           fi
 
-          mapfile -d '' -t all_json_files < <(find configs/ -name "*.json" -print0 | sort -z)
+          mapfile -t all_json_files < <(find configs/ -name "*.json" -print0 | xargs -0 -n1 | sort)
 
           if [ "${#all_json_files[@]}" -eq 0 ]; then
             echo "::error::No config JSON files found under configs/"
@@ -225,69 +225,45 @@ jobs:
           fi
 
           echo "🔎 Found ${#all_json_files[@]} config JSON file(s)"
-          echo "🔎 Validating config JSON files..."
+          echo "🔎 Combining config JSON files..."
 
-          bad_json_found=false
+          echo "[" > matrix.json
 
-          for file in "${all_json_files[@]}"; do
-            echo "Checking JSON: $file"
+          for i in "${!all_json_files[@]}"; do
+            file="${all_json_files[$i]}"
 
-            if ! jq_error="$(jq empty "$file" 2>&1 >/dev/null)"; then
-              bad_json_found=true
+            if [ ! -f "$file" ]; then
+              echo "::warning::Config file disappeared before read: $file"
+              continue
+            fi
 
-              echo ""
-              echo "::error file=${file}::Invalid JSON in config file"
-              echo "❌ Invalid JSON: $file"
-              echo ""
-              echo "---- jq error ----"
-              echo "$jq_error"
-              echo ""
+            echo "Loading config: $file"
 
-              line_number="$(
-                echo "$jq_error" \
-                  | sed -nE 's/.* at line ([0-9]+), column ([0-9]+).*/\1/p' \
-                  | head -n1
-              )"
+            if ! jq '.' "$file" >> matrix.json; then
+              echo "::error file=${file}::Invalid JSON or failed to read config"
+              echo "---- first 120 lines of $file ----"
+              nl -ba "$file" | sed -n '1,120p'
+              exit 1
+            fi
 
-              if [[ "$line_number" =~ ^[0-9]+$ ]]; then
-                start=$(( line_number > 10 ? line_number - 10 : 1 ))
-                end=$(( line_number + 10 ))
-
-                echo "---- context around line ${line_number} in ${file} ----"
-                nl -ba "$file" | sed -n "${start},${end}p"
-              else
-                echo "---- first 120 lines of ${file} ----"
-                nl -ba "$file" | sed -n '1,120p'
-              fi
-
-              echo ""
-              echo "Common causes:"
-              echo "  - Unquoted version number, e.g. kernel_full_version: 6.1.118"
-              echo "  - JSON comments // or /* */"
-              echo "  - Trailing comma"
-              echo "  - Unquoted strings like OOS15 or android15"
-              echo ""
-
-              break
+            if [ $((i + 1)) -lt "${#all_json_files[@]}" ]; then
+              echo "," >> matrix.json
             fi
           done
 
-          if [ "$bad_json_found" = "true" ]; then
+          echo "]" >> matrix.json
+
+          if ! jq empty matrix.json >/dev/null 2>&1; then
+            echo "::error::Generated matrix.json is invalid"
+            echo "---- first 160 lines of generated matrix.json ----"
+            nl -ba matrix.json | sed -n '1,160p'
+            echo "---- last 160 lines of generated matrix.json ----"
+            nl -ba matrix.json | tail -n 160
             exit 1
           fi
 
-          echo "✅ All config JSON files are valid"
-
-          jq -s '
-            map(
-              if type == "array" then .[]
-              elif type == "object" then .
-              else empty
-              end
-            )
-          ' "${all_json_files[@]}" > matrix.json
-
-          echo "✅ matrix.json generated from configs"
+          matrix_total="$(jq 'length' matrix.json)"
+          echo "✅ matrix.json generated from configs: ${matrix_total} item(s)"
 
           jq_filter="."
 
