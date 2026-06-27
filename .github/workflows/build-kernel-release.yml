@@ -1686,7 +1686,7 @@ jobs:
               short_sha="${sha:0:12}"
               asset_url="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.NEW_TAG }}/${name}"
 
-              echo "| ${idx} | \`${model}\` | \`${os_version}\` / \`COS${os_number}\`* | \`${kernel_version}\` | \`${ksu_type}-${ksu_ver}\`, ${susfs_display} | \`${features}\` | [⬇️ Download](${asset_url}) | \`${short_sha}...\` |" \
+              echo "| ${idx} | \`${model}\` | \`${os_version}\` / \`COS${os_number}\`* | \`${kernel_version}\` | \`${ksu_type}-${ksu_ver}\`, ${susfs_display} | \`${features}\` | <a href=\"${asset_url}\">Download</a> | \`${short_sha}...\` |" \
                 >> 00_DOWNLOADS.md
             done
 
@@ -1716,9 +1716,9 @@ jobs:
             echo ""
             echo "| Purpose | App | Link |"
             echo "|---------|-----|------|"
-            echo "| Root manager | ReSukiSU Manager | https://github.com/ReSukiSU/ReSukiSU/releases |"
-            echo "| SUSFS userspace module | KSU SUSFS Module | https://github.com/sidex15/ksu_module_susfs/releases |"
-            echo "| Kernel flashing | Kernel Flasher | https://github.com/fatalcoder524/KernelFlasher/releases |"
+            echo "| Root manager | ReSukiSU Manager | <a href=\"https://github.com/ReSukiSU/ReSukiSU/releases\">Open</a> |"
+            echo "| SUSFS userspace module | KSU SUSFS Module | <a href=\"https://github.com/sidex15/ksu_module_susfs/releases\">Open</a> |"
+            echo "| Kernel flashing | Kernel Flasher | <a href=\"https://github.com/fatalcoder524/KernelFlasher/releases\">Open</a> |"
             echo ""
             echo "---"
             echo ""
