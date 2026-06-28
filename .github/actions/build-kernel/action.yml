@@ -2455,6 +2455,134 @@ runs:
 
         echo "::endgroup::"
 
+    - name: Collect ReSuki Build Config
+      if: ${{ always() && steps.build_kernel_step.conclusion == 'success' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        echo "::group::Collect ReSuki build .config"
+
+        CONFIG_ARTIFACT_DIR="$ARTIFACTS_FOLDER/configs"
+        mkdir -p "$CONFIG_ARTIFACT_DIR"
+
+        echo "Searching for .config files under:"
+        echo "  COMMON_KERNEL_FOLDER=$COMMON_KERNEL_FOLDER"
+        echo "  KERNEL_PLATFORM_FOLDER=$KERNEL_PLATFORM_FOLDER"
+
+        mapfile -t CONFIG_CANDIDATES < <(
+          find "$COMMON_KERNEL_FOLDER" "$KERNEL_PLATFORM_FOLDER" \
+            -type f \
+            -name ".config" \
+            2>/dev/null | sort -u
+        )
+
+        if [ "${#CONFIG_CANDIDATES[@]}" -eq 0 ]; then
+          echo "::warning title=.config not found::No .config file was found."
+
+          echo "::group::Output directory diagnostics"
+          find "$KERNEL_PLATFORM_FOLDER" \
+            -maxdepth 7 \
+            \( -type d -name out -o -type d -name dist -o -type d -name bazel-bin \) \
+            -print 2>/dev/null || true
+          echo "::endgroup::"
+
+          echo "::endgroup::"
+          exit 0
+        fi
+
+        echo "Found .config candidates:"
+        printf ' - %s\n' "${CONFIG_CANDIDATES[@]}"
+
+        BEST_CONFIG=""
+
+        # Prefer the normal non-Bazel make output used by this action.
+        if [ -f "$COMMON_KERNEL_FOLDER/out/.config" ]; then
+          BEST_CONFIG="$COMMON_KERNEL_FOLDER/out/.config"
+        fi
+
+        # Fallback: select the first config that contains the symbols we care about.
+        if [ -z "$BEST_CONFIG" ]; then
+          for candidate in "${CONFIG_CANDIDATES[@]}"; do
+            if grep -qE 'CONFIG_(KSU|RUST|LTO|LOCALVERSION|ANDROID_BINDER_IPC_RUST|KSU_SUSFS)' "$candidate" 2>/dev/null; then
+              BEST_CONFIG="$candidate"
+              break
+            fi
+          done
+        fi
+
+        if [ -z "$BEST_CONFIG" ]; then
+          BEST_CONFIG="${CONFIG_CANDIDATES[0]}"
+        fi
+
+        echo "Selected config: $BEST_CONFIG"
+
+        CONFIG_COPY="$CONFIG_ARTIFACT_DIR/${OP_MODEL}_${OP_OS_VERSION}_${KERNEL_FULL_VER}_resuki.config"
+        SUMMARY_COPY="$CONFIG_ARTIFACT_DIR/${OP_MODEL}_${OP_OS_VERSION}_${KERNEL_FULL_VER}_resuki-summary.txt"
+
+        cp "$BEST_CONFIG" "$CONFIG_COPY"
+
+        {
+          echo "===== ReSuki Config Metadata ====="
+          echo "Model: ${OP_MODEL:-unknown}"
+          echo "OS Version: ${OP_OS_VERSION:-unknown}"
+          echo "Android: ${ANDROID_VER:-unknown}"
+          echo "Kernel base: ${KERNEL_VER:-unknown}"
+          echo "Kernel full: ${KERNEL_FULL_VER:-unknown}"
+          echo "OP_LTO: ${OP_LTO:-unknown}"
+          echo "OP_HMBIRD: ${OP_HMBIRD:-unknown}"
+          echo "OP_RUST_BUILD: ${OP_RUST_BUILD:-unknown}"
+          echo "OP_SUSFS: ${OP_SUSFS:-unknown}"
+          echo "KSUVER: ${KSUVER:-unknown}"
+          echo "SUSVER: ${SUSVER:-unknown}"
+          echo "KSU_COMMIT_SHA: ${KSU_COMMIT_SHA:-unknown}"
+          echo "SUSFS_COMMIT_SHA: ${SUSFS_COMMIT_SHA:-unknown}"
+          echo "Selected config: $BEST_CONFIG"
+          echo
+
+          echo "===== Identity ====="
+          grep -nE '^(CONFIG_LOCALVERSION|# CONFIG_LOCALVERSION_AUTO|CONFIG_LOCALVERSION_AUTO)' "$CONFIG_COPY" || true
+          echo
+
+          echo "===== LTO / CFI / Shadow Call Stack ====="
+          grep -nE '^(CONFIG_LTO|CONFIG_LTO_NONE|CONFIG_THINLTO|CONFIG_CFI|CONFIG_SHADOW_CALL_STACK|# CONFIG_LTO|# CONFIG_THINLTO|# CONFIG_CFI|# CONFIG_SHADOW_CALL_STACK)' "$CONFIG_COPY" || true
+          echo
+
+          echo "===== KernelSU / ReSukiSU / SUSFS ====="
+          grep -nEi 'KSU|KERNELSU|REKERNELSU|SUSFS|SUKISU' "$CONFIG_COPY" || true
+          echo
+
+          echo "===== Rust / Binder Rust ====="
+          grep -nEi 'RUST|BINDER.*RUST|ANDROID_BINDER_IPC_RUST' "$CONFIG_COPY" || true
+          echo
+
+          echo "===== OnePlus / OPLUS / HMBIRD / Fengchi ====="
+          grep -nEi 'OPLUS|ONEPLUS|HMBIRD|FENGCHI|OVERWRITER|PERF|QCOM|SM8750|SM8850|CANOE|PINEAPPLE|SUN|KALAMA' "$CONFIG_COPY" || true
+          echo
+
+          echo "===== Modules / GKI / ABI ====="
+          grep -nE '^(CONFIG_MODULES|CONFIG_MODVERSIONS|CONFIG_MODULE_UNLOAD|CONFIG_GKI|CONFIG_ANDROID|CONFIG_KALLSYMS|CONFIG_KPROBES|CONFIG_BPF|CONFIG_SECURITY|CONFIG_LSM|CONFIG_LTO|CONFIG_CFI)' "$CONFIG_COPY" || true
+          echo
+
+          echo "===== Droidspaces / NTSync / IP_SET / BBR / BBG ====="
+          grep -nEi 'NTSYNC|SYSVIPC|PID_NS|POSIX_MQUEUE|IP_SET|NETFILTER_XT|BBR|TCP_CONG|BBG|BASEBAND|DROID|ANDROID_BINDER' "$CONFIG_COPY" || true
+        } > "$SUMMARY_COPY"
+
+        echo "::group::Selected ReSuki config preview"
+        cat "$SUMMARY_COPY"
+        echo "::endgroup::"
+
+        {
+          echo "RESUKI_CONFIG_PATH=$CONFIG_COPY"
+          echo "RESUKI_CONFIG_SUMMARY_PATH=$SUMMARY_COPY"
+        } >> "$GITHUB_ENV"
+
+        echo "✅ ReSuki config collected:"
+        echo "  Config:  $CONFIG_COPY"
+        echo "  Summary: $SUMMARY_COPY"
+
+        echo "::endgroup::"
+
     - name: 📊 ccache Post-Build Statistics
       id: ccache_stats
       if: ${{ success() && (inputs.clean == false || inputs.clean == 'false') }}
@@ -3023,13 +3151,34 @@ runs:
         compression-level: 9
         retention-days: 90
 
-    - name: Upload Artifacts
-      if: ${{ success() && steps.create_zip.conclusion == 'success' }}
+    - name: Upload ReSuki Build Config
+      if: ${{ always() && env.RESUKI_CONFIG_PATH != '' }}
       uses: actions/upload-artifact@v7
       with:
-        name: ${{ env.ZIP_NAME }}
-        path: ${{ env.ARTIFACTS_FOLDER }}/${{ env.ZIP_NAME }}
-        compression-level: 0
+        name: config-resuki-${{ env.OP_MODEL }}-${{ env.OP_OS_VERSION }}-${{ env.KERNEL_FULL_VER }}
+        path: ${{ env.RESUKI_CONFIG_PATH }}
+        if-no-files-found: ignore
+        compression-level: 6
+        retention-days: 90
+
+    - name: Upload ReSuki Build Config
+      if: ${{ always() && steps.build_kernel_step.conclusion == 'success' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: config-resuki-${{ env.OP_MODEL }}-${{ env.OP_OS_VERSION }}-${{ env.KERNEL_FULL_VER }}
+        path: ${{ env.ARTIFACTS_FOLDER }}/configs/*_resuki.config
+        if-no-files-found: ignore
+        compression-level: 6
+        retention-days: 90
+
+    - name: Upload ReSuki Config Summary
+      if: ${{ always() && steps.build_kernel_step.conclusion == 'success' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: config-summary-resuki-${{ env.OP_MODEL }}-${{ env.OP_OS_VERSION }}-${{ env.KERNEL_FULL_VER }}
+        path: ${{ env.ARTIFACTS_FOLDER }}/configs/*_resuki-summary.txt
+        if-no-files-found: ignore
+        compression-level: 6
         retention-days: 90
 
     - name: Upload ccache log
