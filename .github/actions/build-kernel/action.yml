@@ -1803,17 +1803,17 @@ runs:
         echo "Add BBR"
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
         CONFIG_TCP_CONG_ADVANCED=y
-        CONFIG_TCP_CONG_BBR=y        
+        CONFIG_TCP_CONG_BBR=y
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
         CONFIG_NET_SCH_CAKE=y
         CONFIG_NET_SCH_PIE=y
         CONFIG_NET_SCH_FQ_PIE=y
-        EOF        
-                
+        EOF
+
         echo "✅ BBR patches applied"
         echo "::endgroup::"
-    
+
     - name: Add TTL Target Support
       if: ${{ env.OP_TTL == 'true' }}
       shell: bash
