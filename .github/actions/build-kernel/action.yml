@@ -4,6 +4,7 @@ inputs:
   op_config_json:
     description: 'JSON string containing full device config'
     required: true
+    type: string
 
   ksu_type:
     description: 'Select KSU Type'
@@ -13,37 +14,44 @@ inputs:
   ksu_branch_or_hash:
     description: 'ReSukiSU branch, tag, or commit hash'
     required: false
+    type: string
     default: ""
 
   susfs_commit_hash_or_branch:
     description: 'SUSFS branch or commit hash'
     required: false
+    type: string
     default: ""
 
   enable_adios:
     description: 'Enable ADIOS I/O scheduler support'
     required: false
-    default: 'false'
+    type: boolean
+    default: false
 
   build_timestamp:
     description: 'Custom kernel build timestamp shown in uname -a, e.g. "Tue Feb 10 10:01:02 UTC 2026". Leave empty to use current UTC time.'
     required: false
+    type: string
     default: ''
 
   optimize_level:
     description: 'Compiler optimization level (O2 or O3)'
     required: false
+    type: string
     default: O2
 
   clean:
     description: 'Force clean build without ccache acceleration'
     required: false
-    default: 'false'
+    type: boolean
+    default: false
 
   debug:
     description: 'Enable dumping debug related artifacts'
     required: false
-    default: 'false'
+    type: boolean
+    default: false
 
   github_token:
     description: 'GitHub Token'
@@ -130,14 +138,14 @@ runs:
     
     - name: Parse op_config_json
       shell: bash
-      env:
-        OP_CONFIG_JSON_INPUT: ${{ inputs.op_config_json }}
       run: |
         set -euo pipefail
-
+       
         echo "::add-mask::${{ inputs.github_token }}"
 
-        printf '%s\n' "$OP_CONFIG_JSON_INPUT" > /tmp/config.json
+        cat > /tmp/config.json <<'JSONEOF'
+        ${{ inputs.op_config_json }}
+        JSONEOF
 
         jq empty /tmp/config.json
         
@@ -722,7 +730,6 @@ runs:
 
     - name: Check ccache
       shell: bash
-      if: ${{ inputs.clean == false || inputs.clean == 'false' }}
       run: |
         set -euo pipefail
         echo "::group::Check ccache"
@@ -1008,17 +1015,7 @@ runs:
         trap 'rm -f "$RSKSU_SETUP_SCRIPT"' EXIT
 
         echo "Downloading ReSukiSU setup script..."
-        if ! curl \
-          --fail \
-          --location \
-          --proto '=https' \
-          --tlsv1.2 \
-          --max-time 120 \
-          --connect-timeout 20 \
-          --retry 3 \
-          --retry-delay 5 \
-          --retry-all-errors \
-          -LSs \
+        if ! curl --fail --location --proto '=https' --tlsv1.2 -LSs \
           "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" \
           -o "$RSKSU_SETUP_SCRIPT"; then
           echo "::error::Failed to download ReSukiSU setup.sh"
@@ -1079,7 +1076,7 @@ runs:
         DEFCONFIG="$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
         mkdir -p "$(dirname "$DEFCONFIG")"
         touch "$DEFCONFIG"
-
+        
         TAG_NAME="$(git -C KernelSU describe --tags --abbrev=0 2>/dev/null || echo v1.0.0)"
 
         sed -i \
@@ -1170,7 +1167,7 @@ runs:
             echo "ℹ️ Skipping KernelSU folder patch for ReSukiSU"
             ;;
           unknown)
-            echo "::warning::Could not detect SUSFS version. Continuing because patch file exists."
+            echo "Warning: Could not detect SUSFS version. Continuing because patch file exists."
             ;;
           *)
             echo "::error::Unsupported SUSFS version: $SUSVER"
@@ -1261,19 +1258,8 @@ runs:
         fake_patched_expand=0
 
         if [ "$KMI" = "android15-6.6" ]; then
-          if [ -f "./fs/namespace.c" ] && ! grep -qF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
-            echo "Adding missing trace/hooks/fs.h include for android15-6.6"
-            if grep -qF '#include <trace/hooks/blk.h>' ./fs/namespace.c; then
-              sed -i '/#include <trace\/hooks\/blk\.h>/a #include <trace/hooks/fs.h>' ./fs/namespace.c
-            elif grep -qF '#include "internal.h"' ./fs/namespace.c; then
-              sed -i '/#include "internal.h"/a #include <trace/hooks/fs.h>' ./fs/namespace.c
-            else
-              sed -i '1i#include <trace/hooks/fs.h>' ./fs/namespace.c
-            fi
-          fi
-
           if [ -f "./fs/proc/task_mmu.c" ] && ! grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
-            echo "nr_subpages not found, applying android15-6.6 SUSFS compatibility fake patch"
+            echo "nr_subpages not found, applying patch compatibility fix"
 
             sed -i \
               -e '/int ret = 0, copied = 0;/a \\tunsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;' \
@@ -1284,21 +1270,21 @@ runs:
           fi
 
           if [ -f "./fs/proc/base.c" ] && ! grep -qxF '#include <linux/dma-buf.h>' ./fs/proc/base.c; then
-            echo "#include <linux/dma-buf.h> not found, adding missing header"
+            echo "#include <linux/dma-buf.h> not found, adding missing header file"
             sed -i '/#include <linux\/cpufreq_times.h>/a #include <linux\/dma-buf.h>' ./fs/proc/base.c
           fi
 
           if [ -f "./mm/memory.c" ] && ! grep -qxF '#include <linux/zswap.h>' ./mm/memory.c; then
-            echo "#include <linux/zswap.h> not found, adding missing header"
+            echo "#include <linux/zswap.h> not found, adding missing header file"
             sed -i '/#include <linux\/sched\/sysctl\.h>/a #include <linux\/zswap.h>' ./mm/memory.c
             fake_patched_swap=1
           fi
 
           if [ -f "./fs/proc/task_mmu.c" ] \
             && grep -qF 'if (vma->vm_end > last_vma_end)' ./fs/proc/task_mmu.c \
-            && ! grep -qF 'SUSFS_IS_INODE_SUS_MAP' ./fs/proc/task_mmu.c; then
+            && ! grep -qF 'if (vma->vm_end > last_vma_end) {' ./fs/proc/task_mmu.c; then
 
-            echo "Temporarily expanding last_vma_end block to fix android15-6.6 SUSFS matching"
+            echo "Temporarily expanding the last_vma_end if block to fix matching issues"
 
             perl -i -0pe \
               's/\t\t\tif \(vma->vm_end > last_vma_end\)\n\t\t\t\tsmap_gather_stats\(vma, \&mss, last_vma_end\);/\t\t\tif (vma->vm_end > last_vma_end) {\n\t\t\t\tsmap_gather_stats(vma, \&mss, last_vma_end);\n\t\t\t\tlast_vma_end = vma->vm_end;\n\t\t\t}/' \
@@ -1315,7 +1301,7 @@ runs:
           fi
 
           if [ -f "./fs/proc/base.c" ] && ! grep -qxF '#include <linux/dma-buf.h>' ./fs/proc/base.c; then
-            echo "#include <linux/dma-buf.h> not found, adding missing header"
+            echo "#include <linux/dma-buf.h> not found, adding missing header file"
             sed -i '/#include <linux\/cpufreq_times.h>/a #include <linux\/dma-buf.h>' ./fs/proc/base.c
           fi
         fi
@@ -1473,12 +1459,7 @@ runs:
 
         if [ "$fake_patched_expand" = 1 ]; then
           if [ "$KMI" = "android15-6.6" ]; then
-            if [ -f "./fs/proc/task_mmu.c" ] \
-              && grep -qF 'if (vma->vm_end > last_vma_end) {' ./fs/proc/task_mmu.c \
-              && ! grep -qF 'SUSFS_IS_INODE_SUS_MAP' ./fs/proc/task_mmu.c; then
-
-              echo "Reverting temporary last_vma_end expansion"
-
+            if [ -f "./fs/proc/task_mmu.c" ] && grep -qF 'if (vma->vm_end > last_vma_end) {' ./fs/proc/task_mmu.c; then
               perl -i -0pe \
                 's/\t\t\tif \(vma->vm_end > last_vma_end\) \{\n\t\t\t\tsmap_gather_stats\(vma, \&mss, last_vma_end\);\n\t\t\t\tlast_vma_end = vma->vm_end;\n\t\t\t\}/\t\t\tif (vma->vm_end > last_vma_end)\n\t\t\t\tsmap_gather_stats(vma, \&mss, last_vma_end);/' \
                 ./fs/proc/task_mmu.c
@@ -1489,7 +1470,6 @@ runs:
         if [ "$fake_patched" = 1 ]; then
           if [ "$KMI" = "android15-6.6" ]; then
             if [ -f "./fs/proc/task_mmu.c" ] && grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
-              echo "Reverting temporary nr_subpages fake patch"
               sed -i \
                 -e '/unsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;/d' \
                 -e '/pagemap_entry_t \*res = NULL;/d' \
@@ -1515,7 +1495,6 @@ runs:
         if [ "$fake_patched_swap" = 1 ]; then
           if [ "$KMI" = "android15-6.6" ]; then
             if [ -f "./mm/memory.c" ] && grep -qxF '#include <linux/zswap.h>' ./mm/memory.c; then
-              echo "Reverting temporary zswap include"
               sed -i '/#include <linux\/zswap\.h>/d' ./mm/memory.c
             fi
           fi
@@ -1533,22 +1512,6 @@ runs:
             echo "::endgroup::"
           done <<< "$REJECT_FILES"
           exit 1
-        fi
-
-        if [ "$KMI" = "android15-6.6" ]; then
-          echo "Verifying android15-6.6 SUSFS markers"
-
-          echo "::group::task_mmu.c SUSFS markers"
-          grep -nE 'SUSFS|SUS_MAP|SUSFS_IS_INODE_SUS_MAP|last_vma_end|nr_subpages' ./fs/proc/task_mmu.c | head -n 120 || true
-          echo "::endgroup::"
-
-          echo "::group::memory.c SUSFS markers"
-          grep -nE 'SUSFS|SUS_MAP|susfs_def' ./mm/memory.c | head -n 120 || true
-          echo "::endgroup::"
-
-          echo "::group::namespace.c SUSFS markers"
-          grep -nE 'SUSFS|susfs|CL_COPY_MNT_NS|trace/hooks/fs' ./fs/namespace.c | head -n 120 || true
-          echo "::endgroup::"
         fi
 
         echo "✅ SUSFS patches applied"
@@ -1638,146 +1601,35 @@ runs:
         KERNEL_VERSION="$KERNEL_VER"
         MIN_VERSION="5.16"
 
-        dump_rejects() {
-          local label="${1:-patch}"
-
-          if find . -name "*.rej" -print -quit | grep -q .; then
-            echo "::group::Reject files for ${label}"
-            find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
-            echo "::endgroup::"
-          else
-            echo "No .rej files found for ${label}"
-          fi
-        }
-
-        clear_rejects() {
-          find . -name "*.rej" -delete 2>/dev/null || true
-        }
-
-        cleanup_patch_backups() {
-          find . -name "*.orig" -delete 2>/dev/null || true
-        }
-
-        apply_required_patch() {
-          local patch_file="$1"
-          local label="$2"
-          shift 2
-
-          if [ ! -f "$patch_file" ]; then
-            echo "::error::Required patch not found for ${label}: $patch_file"
-            exit 1
-          fi
-
-          echo "Applying required patch: ${label}"
-          clear_rejects
-
-          if ! patch "$@" < "$patch_file"; then
-            echo "::error::Required patch failed: ${label}"
-            dump_rejects "$label"
-            exit 1
-          fi
-
-          clear_rejects
-          echo "✅ Required patch applied: ${label}"
-        }
-
-        apply_optional_patch() {
-          local patch_file="$1"
-          local label="$2"
-          shift 2
-
-          if [ ! -f "$patch_file" ]; then
-            echo "::warning::Optional patch not found for ${label}: $patch_file"
-            return 0
-          fi
-
-          echo "Applying optional patch: ${label}"
-          clear_rejects
-
-          if ! patch "$@" < "$patch_file"; then
-            echo "::warning::Optional patch failed: ${label}. Continuing without it."
-            dump_rejects "$label"
-            clear_rejects
-            return 0
-          fi
-
-          clear_rejects
-          echo "✅ Optional patch applied: ${label}"
-          return 0
-        }
-
         if [ "$(printf '%s\n' "$KERNEL_VERSION" "$MIN_VERSION" | sort -V | head -n1)" = "$KERNEL_VERSION" ]; then
-          apply_required_patch \
-            "$KERNEL_PATCHES_FOLDER/gki_ptrace.patch" \
-            "gki_ptrace" \
-            -p1 -F 3
+          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/gki_ptrace.patch"
         else
           echo "Kernel >= $MIN_VERSION, skipping ptrace patch"
         fi
 
-        if [ "${OP_HMBIRD:-false}" = "true" ]; then
-          echo "HMBIRD enabled. Applying HMBIRD compatibility patches."
-
+        if [ "$OP_HMBIRD" = "true" ]; then
           HMBIRD_MODEL="$(echo "$OP_MODEL" | sed 's/-[0-9]\+\.[0-9]\+\.[0-9]\+$//')"
 
           case "$OP_MODEL" in
-            OP13-6.6.30)
-              HMBIRD_MODEL="OP13-PJZ"
-              ;;
-          esac
-
-          case "$OP_MODEL" in
             OP-ACE-5-ULTRA-6.6.50|OP-ACE-5-PRO-6.6.30|OP13-6.6.30|OP13-CPH-6.6.56)
-              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/deprecated"
-              ;;
+              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/deprecated" ;;
             *)
-              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird"
-              ;;
+              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird" ;;
           esac
 
-          echo "HMBIRD model: $HMBIRD_MODEL"
-          echo "HMBIRD patch dir: $FENGCHI_DIR"
+          dos2unix "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${OP_OS_VERSION}.patch"
+          patch -p1 -F 3 < "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${OP_OS_VERSION}.patch"
 
-          FENGCHI_PATCH="$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${OP_OS_VERSION}.patch"
-          OVERWRITER_PATCH="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
-          HMBIRD_CONFIG_PATCH="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
+          dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
+          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
 
-          if [ -f "$FENGCHI_PATCH" ]; then
-            dos2unix "$FENGCHI_PATCH" || true
-          fi
+          chmod +x ./drivers/of/overwriter/overwrite_configs/convert_configs.sh || true
 
-          apply_optional_patch \
-            "$FENGCHI_PATCH" \
-            "hmbird fengchi ${HMBIRD_MODEL} ${OP_OS_VERSION}" \
-            -p1 -F 3
-
-          if [ -f "$OVERWRITER_PATCH" ]; then
-            dos2unix "$OVERWRITER_PATCH" || true
-          fi
-
-          apply_optional_patch \
-            "$OVERWRITER_PATCH" \
-            "hmbird overwriter" \
-            -p1 -F 3
-
-          chmod +x ./drivers/of/overwriter/overwrite_configs/convert_configs.sh 2>/dev/null || true
-
-          if [ -f "$HMBIRD_CONFIG_PATCH" ]; then
-            dos2unix "$HMBIRD_CONFIG_PATCH" || true
-          fi
-
-          apply_optional_patch \
-            "$HMBIRD_CONFIG_PATCH" \
-            "hmbird config" \
-            -p1 -F 3
-
-          echo "✅ HMBIRD patch phase completed"
+          dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
+          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
         else
-          echo "HMBIRD not enabled, skipping fengchi patch"
+          echo "Hmbird not enabled, skipping fengchi patch"
         fi
-
-        clear_rejects
-        cleanup_patch_backups
 
         echo "✅ Other patches applied"
         echo "::endgroup::"
@@ -2142,25 +1994,18 @@ runs:
         set +u
         source "$KERNEL_PLATFORM_FOLDER/build/kernel/_setup_env.sh" 2>/dev/null || true
         set -u
-
+        
         if [[ ! "${NPROC:-}" =~ ^[1-9][0-9]*$ ]]; then
           echo "::warning::NPROC not set or invalid ('${NPROC:-}'), falling back to nproc --all"
           NPROC="$(nproc --all)"
         fi
-
         echo "Build parallelism: $NPROC threads"
-
-        LTO_JOBS="$NPROC"
-        if [ "$LTO_JOBS" -gt 8 ]; then
-          LTO_JOBS=8
-        fi
-        export LTO_JOBS
 
         cat > "$COMMON_KERNEL_FOLDER/ld-wrapper" <<'EOF'
         #!/bin/bash
         exec ld.lld "$@" \
           --thinlto-cache-dir="${LDCACHE_DIR}" \
-          --thinlto-jobs="${LTO_JOBS}"
+          --thinlto-jobs="${NPROC}"
         EOF
         chmod +x "$COMMON_KERNEL_FOLDER/ld-wrapper"
 
@@ -2191,6 +2036,11 @@ runs:
         echo "Build user:        $KBUILD_BUILD_USER"
         echo "Build host:        $KBUILD_BUILD_HOST"
 
+        export CC="ccache clang"
+        export CXX="ccache clang++"
+        export HOSTCC="ccache clang"
+        export HOSTCXX="ccache clang++"
+
         sanitize_ccache_env() {
           unset CCACHE_DEPEND          || true
           unset CCACHE_READONLY_DIRECT || true
@@ -2210,31 +2060,16 @@ runs:
           export CCACHE_IGNOREOPTIONS="--sysroot*"
         }
 
-        if [ "${{ inputs.clean }}" = "true" ]; then
-          echo "Clean build requested: disabling ccache wrappers"
-          export CC="clang"
-          export CXX="clang++"
-          export HOSTCC="clang"
-          export HOSTCXX="clang++"
-        else
-          echo "ccache build enabled"
-          export CC="ccache clang"
-          export CXX="ccache clang++"
-          export HOSTCC="ccache clang"
-          export HOSTCXX="ccache clang++"
-          sanitize_ccache_env
+        sanitize_ccache_env
+
+        if env | grep -q '^CCACHE_DEPEND='; then
+          echo "::error::CCACHE_DEPEND is still set during build"
+          exit 1
         fi
 
-        if [ "${{ inputs.clean }}" != "true" ]; then
-          if env | grep -q '^CCACHE_DEPEND='; then
-            echo "::error::CCACHE_DEPEND is still set during build"
-            exit 1
-          fi
-
-          if env | grep -q '^CCACHE_READONLY_DIRECT='; then
-            echo "::error::CCACHE_READONLY_DIRECT is still set during build"
-            exit 1
-          fi
+        if env | grep -q '^CCACHE_READONLY_DIRECT='; then
+          echo "::error::CCACHE_READONLY_DIRECT is still set during build"
+          exit 1
         fi
 
         OUT=out
@@ -2245,42 +2080,28 @@ runs:
         echo "============================================"
         echo "which clang: $(which clang)"
         clang --version 2>&1 | head -n1 || true
-        echo "CC:      $CC"
-        echo "CXX:     $CXX"
-        echo "HOSTCC:  $HOSTCC"
-        echo "HOSTCXX: $HOSTCXX"
+        echo ""
+        echo "ccache configuration:"
+        sanitize_ccache_env
+        ccache -p | grep -E "(compression|direct_mode|read_only_direct|readonly_direct|depend|sloppiness|file_clone|inode_cache)" || true
 
-        if [ "${{ inputs.clean }}" != "true" ]; then
-          echo ""
-          echo "ccache configuration:"
-          sanitize_ccache_env
-          ccache -p | grep -E "(compression|direct_mode|read_only_direct|readonly_direct|depend|sloppiness|file_clone|inode_cache)" || true
-
-          if env | grep -q '^CCACHE_DEPEND='; then
-            echo "::error::CCACHE_DEPEND is still set during ccache verification"
-            exit 1
-          fi
-
-          if env | grep -q '^CCACHE_READONLY_DIRECT='; then
-            echo "::error::CCACHE_READONLY_DIRECT is still set during ccache verification"
-            exit 1
-          fi
-
-          echo ""
-          echo "ccache pre-build stats:"
-          sanitize_ccache_env
-          ccache -s | head -n 30 || true
-        else
-          echo ""
-          echo "ccache: disabled for clean build"
+        if env | grep -q '^CCACHE_DEPEND='; then
+          echo "::error::CCACHE_DEPEND is still set during ccache verification"
+          exit 1
         fi
 
+        if env | grep -q '^CCACHE_READONLY_DIRECT='; then
+          echo "::error::CCACHE_READONLY_DIRECT is still set during ccache verification"
+          exit 1
+        fi
+
+        echo ""
+        echo "ccache pre-build stats:"
+        sanitize_ccache_env
+        ccache -s | head -n 30 || true
         echo "============================================"
 
-        if [ "${{ inputs.clean }}" != "true" ]; then
-          sanitize_ccache_env
-        fi
-
+        sanitize_ccache_env
         make \
           LD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
           HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
@@ -2343,10 +2164,7 @@ runs:
           scripts/config --file "$OUT/.config" -d "$sym" 2>/dev/null || true
         done
 
-        if [ "${{ inputs.clean }}" != "true" ]; then
-          sanitize_ccache_env
-        fi
-
+        sanitize_ccache_env
         make \
           LD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
           HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
@@ -2360,37 +2178,30 @@ runs:
         echo "Build Configuration"
         echo "============================================"
         echo "Device:       ${OP_MODEL}"
-        echo "Kernel:       ${KERNEL_FULL_VER}"
+        echo "Kernel:       ${KERNEL_FULL_VER}"        
         echo "Threads:      ${NPROC}"
-        echo "LTO jobs:     ${LTO_JOBS}"
         echo "Optimization: ${{ inputs.optimize_level }}"
         echo "LTO:          $OP_LTO"
-        echo "Clean build:  ${{ inputs.clean }}"
         echo "Timestamp:    $KBUILD_BUILD_TIMESTAMP"
         echo "KCFLAGS:      ${KCFLAGS:0:180}..."
         echo "KCPPFLAGS:    ${KCPPFLAGS:0:180}..."
         echo "============================================"
 
         echo "Running make prepare for cache warm-up..."
-
-        if [ "${{ inputs.clean }}" != "true" ]; then
-          sanitize_ccache_env
-        fi
-
+        sanitize_ccache_env
         make \
           LD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
           HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
           O="$OUT" \
           prepare 2>&1 | tail -n 10 || true
 
+        sanitize_ccache_env
+
         BUILD_START="$(date +%s)"
         set -o pipefail
-
+        
         run_make() {
-          if [ "${{ inputs.clean }}" != "true" ]; then
-            sanitize_ccache_env
-          fi
-
+          sanitize_ccache_env
           make \
             LD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
             HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
@@ -2440,18 +2251,12 @@ runs:
         echo "✅ Build completed"
         echo "   Duration: $((BUILD_TIME / 60))m $((BUILD_TIME % 60))s"
         echo "   Threads:  ${NPROC}"
-        echo "   LTO jobs: ${LTO_JOBS}"
         echo "   Image:    $(numfmt --to=iec-i --suffix=B "$IMG_SIZE")"
 
-        if [ "${{ inputs.clean }}" != "true" ]; then
-          echo ""
-          echo "ccache post-build stats:"
-          sanitize_ccache_env
-          ccache -s || true
-        else
-          echo ""
-          echo "ccache: disabled for clean build"
-        fi
+        echo ""
+        echo "ccache post-build stats:"
+        sanitize_ccache_env
+        ccache -s || true
 
         echo "::endgroup::"
 
@@ -2771,11 +2576,6 @@ runs:
         SUSFS_REF_LOCAL="${SUSFS_REF:-unknown}"
         FINAL_TIMESTAMP="${EFFECTIVE_BUILD_TIMESTAMP:-${BUILD_TIMESTAMP:-${{ steps.save_metadata.outputs.build_timestamp }}}}"
 
-        # ── Statut global ─────────────────────────────────────────────────
-        BUILD_STATUS_ICON="✅"
-        BUILD_STATUS_LABEL="Success"
-
-        # ── Console summary ───────────────────────────────────────────────
         {
           echo "Model: ${{ env.OP_MODEL }}"
           echo "OS Version: ${{ env.OP_OS_VERSION }}"
@@ -2825,192 +2625,71 @@ runs:
           echo "Artifact Name: ${{ env.ZIP_NAME }}"
         } | tee summary.txt
 
-        # ── GitHub Step Summary ───────────────────────────────────────────
         {
-          # ── 3.1 Badge de statut ─────────────────────────────────────────
-          echo "## ${BUILD_STATUS_ICON} \`${{ env.OP_MODEL }}\` — ${BUILD_STATUS_LABEL}"
-          echo ""
-          echo "> Built: \`${KERNEL_FULL_VER}\` • ReSukiSU \`${KSUVER:-unknown}\` • SUSFS \`${SUSVER:-none}\` • \`${FINAL_TIMESTAMP}\`"
-          echo ""
-          echo "---"
-          echo ""
-
-          # ── Kernel & Root ───────────────────────────────────────────────
-          echo "### 🎯 Kernel & Root"
+          echo "### 🎯 Kernel Build Summary"
           echo ""
           echo "| Metric | Value |"
           echo "|--------|-------|"
-          echo "| **Model** | \`${{ env.OP_MODEL }}\` |"
-          echo "| **OS Version** | \`${{ env.OP_OS_VERSION }}\` |"
-          echo "| **Kernel Version** | \`${{ steps.save_metadata.outputs.kernel_version }}\` |"
+          echo "| **Model** | ${{ env.OP_MODEL }} |"
+          echo "| **OS Version** | ${{ env.OP_OS_VERSION }} |"
+          echo "| **Kernel Version** | ${{ steps.save_metadata.outputs.kernel_version }} |"
           echo "| **Kernel Uname** | \`${{ env.KERNEL_UNAME }}\` |"
           echo "| **Build Timestamp** | \`${FINAL_TIMESTAMP}\` |"
-          echo "| **Build User** | \`${{ env.BUILD_USER }}\` |"
-          echo "| **Build Host** | \`${{ env.BUILD_HOST }}\` |"
-          echo "| **ReSukiSU Version** | \`${KSUVER:-unknown}\` |"
+          echo "| **Build User** | ${{ env.BUILD_USER }} |"
+          echo "| **Build Host** | ${{ env.BUILD_HOST }} |"
+          echo "| **ReSukiSU Version** | ${KSUVER:-unknown} |"
 
           if [ "$KSU_SHA" != "unknown" ]; then
             echo "| **ReSukiSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/ReSukiSU/ReSukiSU/commit/$KSU_SHA) |"
           else
-            echo "| **ReSukiSU Commit** | \`unknown\` |"
+            echo "| **ReSukiSU Commit** | unknown |"
           fi
 
           if [ "${OP_SUSFS:-false}" = "true" ]; then
-            echo "| **SUSFS Version** | \`${SUSVER:-unknown}\` |"
+            echo "| **SUSFS Version** | ${SUSVER:-unknown} |"
             echo "| **SUSFS Ref** | \`${SUSFS_REF_LOCAL}\` |"
 
             if [ "$SUSFS_SHA" != "unknown" ]; then
               echo "| **SUSFS Commit** | [\`${SUSFS_SHA:0:8}\`](https://gitlab.com/simonpunk/susfs4ksu/-/commit/$SUSFS_SHA) |"
             else
-              echo "| **SUSFS Commit** | \`unknown\` |"
+              echo "| **SUSFS Commit** | unknown |"
             fi
           fi
 
           echo ""
-
-          # ── OnePlus Features ────────────────────────────────────────────
           echo "### 🔧 OnePlus Features"
           echo ""
           echo "| Feature | Status |"
           echo "|---------|--------|"
-
-          _feat() {
-            local label="$1" val="$2"
-            local icon="❌"
-            [ "$val" = "true" ] && icon="✅"
-            echo "| **${label}** | ${icon} |"
-          }
-
-          _feat "BBR"                  "${{ env.OP_BBR }}"
-          _feat "BBG"                  "${{ env.OP_BBG }}"
-          _feat "HMBIRD SCX"           "${{ env.OP_HMBIRD }}"
-          _feat "TTL"                  "${{ env.OP_TTL }}"
-          _feat "IP_SET & IPv6 NAT"    "${{ env.OP_IP_SET }}"
-          _feat "Unicode Fix"          "${{ env.OP_UNICODE }}"
-          _feat "NTSync"               "${{ env.OP_NTSYNC }}"
-          _feat "Droidspaces"          "${{ env.OP_DS }}"
-          _feat "ADIOS I/O Scheduler"  "${{ inputs.enable_adios }}"
+          echo "| **BBR** | ${{ env.OP_BBR }} |"
+          echo "| **BBG** | ${{ env.OP_BBG }} |"
+          echo "| **HMBIRD SCX** | ${{ env.OP_HMBIRD }} |"
+          echo "| **TTL** | ${{ env.OP_TTL }} |"
+          echo "| **IP_SET & IPv6 NAT** | ${{ env.OP_IP_SET }} |"
+          echo "| **Unicode Fix** | ${{ env.OP_UNICODE }} |"
+          echo "| **NTSync** | ${{ env.OP_NTSYNC }} |"
+          echo "| **Droidspaces** | ${{ env.OP_DS }} |"
+          echo "| **ADIOS I/O Scheduler** | ${{ inputs.enable_adios }} |"
 
           echo ""
-
-          # ── Build Metrics ───────────────────────────────────────────────
           echo "### 📊 Build Metrics"
           echo ""
           echo "| Metric | Value |"
           echo "|--------|-------|"
-          echo "| **Optimization** | \`${{ inputs.optimize_level }}\` |"
-          echo "| **Clean Build** | \`${{ inputs.clean }}\` |"
-          echo "| **Build Time** | \`${{ steps.collect_stats.outputs.build_time }}s\` |"
-          echo "| **Compiler Warnings** | \`${{ steps.collect_stats.outputs.warnings_count }}\` |"
+          echo "| **Optimization** | ${{ inputs.optimize_level }} |"
+          echo "| **Clean Build** | ${{ inputs.clean }} |"
+          echo "| **Build Time** | ${{ steps.collect_stats.outputs.build_time }}s |"
 
           if [ "${{ inputs.clean }}" = "false" ]; then
-            echo "| **ccache Hit Rate** | \`${{ steps.ccache_stats.outputs.hit_rate }}\` |"
-            echo "| **ccache Direct Rate** | \`${{ steps.ccache_stats.outputs.direct_rate }}\` |"
-          else
-            echo "| **ccache** | \`disabled (clean build)\` |"
+            echo "| **ccache Hit Rate** | ${{ steps.ccache_stats.outputs.hit_rate }} |"
+            echo "| **ccache Direct Rate** | ${{ steps.ccache_stats.outputs.direct_rate }} |"
           fi
 
-          echo "| **Compiler** | \`${CLANG_VERSION:-unknown}\` |"
-          echo ""
-
-          # ── Checksums ───────────────────────────────────────────────────
-          echo "### 🔐 Checksums"
-          echo ""
-          echo "| File | SHA256 |"
-          echo "|------|--------|"
-          echo "| **kernel Image** | \`${{ steps.collect_stats.outputs.image_sha256 }}\` |"
-          echo "| **AnyKernel3 ZIP** | \`${{ steps.create_zip.outputs.zip_sha256 }}\` |"
-          echo ""
-
-          # ── 3.2 Quick Flash Guide ────────────────────────────────────────
-          echo "### ⚡ Quick Flash Guide"
-          echo ""
-          echo "| Step | Action |"
-          echo "|------|--------|"
-          echo "| **1** | Download \`${{ env.ZIP_NAME }}\` from the workflow artifacts |"
-          echo "| **2** | Verify checksum: \`sha256sum ${{ env.ZIP_NAME }}\` → must match \`${{ steps.create_zip.outputs.zip_sha256 }}\` |"
-          echo "| **3** | Flash via [Kernel Flasher](https://github.com/fatalcoder524/KernelFlasher/releases) |"
-          echo "| **4** | Install [ReSukiSU Manager](https://github.com/ReSukiSU/ReSukiSU/releases) |"
-
-          if [ "${OP_SUSFS:-false}" = "true" ]; then
-            echo "| **5** | Install [SUSFS Module](https://github.com/sidex15/ksu_module_susfs/releases) for userspace SUSFS features |"
-          fi
-
-          echo ""
-          echo "> ⚠️ **Rollback:** Keep a backup of your stock \`boot\`/\`init_boot\` partition before flashing."
-          echo ""
-
-          # ── 3.3 Sections détaillées collapsées ──────────────────────────
-          echo "---"
-          echo ""
-
-          echo "<details>"
-          echo "<summary>🔧 Full KSU/SUSFS defconfig entries (click to expand)</summary>"
-          echo ""
-          echo '```'
-          grep -E '^CONFIG_KSU' \
-            "$COMMON_KERNEL_FOLDER/out/.config" 2>/dev/null \
-            || grep -E '^CONFIG_KSU' \
-                 "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" 2>/dev/null \
-            || echo "(config not available)"
-          echo '```'
-          echo "</details>"
-          echo ""
-
-          echo "<details>"
-          echo "<summary>📋 Full build environment (click to expand)</summary>"
-          echo ""
-          echo "| Variable | Value |"
-          echo "|----------|-------|"
-          echo "| \`ANDROID_VER\` | \`${{ env.ANDROID_VER }}\` |"
-          echo "| \`KERNEL_VER\` | \`${{ env.KERNEL_VER }}\` |"
-          echo "| \`KERNEL_FULL_VER\` | \`${{ env.KERNEL_FULL_VER }}\` |"
-          echo "| \`OP_SOC\` | \`${{ env.OP_SOC }}\` |"
-          echo "| \`OP_BRANCH\` | \`${{ env.OP_BRANCH }}\` |"
-          echo "| \`OP_LTO\` | \`${{ env.OP_LTO }}\` |"
-          echo "| \`NPROC\` | \`${{ env.NPROC }}\` |"
-          echo "| \`CLANG_VERSION\` | \`${CLANG_VERSION:-unknown}\` |"
-          echo "| \`BUILD_USER\` | \`${{ env.BUILD_USER }}\` |"
-          echo "| \`BUILD_HOST\` | \`${{ env.BUILD_HOST }}\` |"
-          echo "| \`SOURCE_DATE_EPOCH\` | \`${SOURCE_DATE_EPOCH:-unknown}\` |"
-          echo "</details>"
-          echo ""
-
-          if [ -f "${TIMING_LOG:-/dev/null}" ]; then
-            echo "<details>"
-            echo "<summary>⏱️ Build timing breakdown (click to expand)</summary>"
-            echo ""
-            echo "| Step | Duration | Status |"
-            echo "|------|----------|--------|"
-
-            TOTAL_TIME=0
-            while IFS=',' read -r label duration status; do
-              [ "$label" = "step_name" ] && continue
-              label="${label//\"/}"
-              icon="✅"
-              [ "$status" = "failed" ] && icon="❌"
-              echo "| \`$label\` | \`${duration}s\` | $icon |"
-              TOTAL_TIME="$(awk -v t="$TOTAL_TIME" -v d="$duration" \
-                'BEGIN{printf "%.2f", t+d}')"
-            done < "$TIMING_LOG"
-
-            echo "| **TOTAL** | **\`${TOTAL_TIME}s\`** | |"
-            echo ""
-            echo "</details>"
-            echo ""
-          fi
-
-          echo "<details>"
-          echo "<summary>📦 Artifact details (click to expand)</summary>"
-          echo ""
-          echo "| Field | Value |"
-          echo "|-------|-------|"
-          echo "| **ZIP Name** | \`${{ env.ZIP_NAME }}\` |"
-          echo "| **ZIP SHA256** | \`${{ steps.create_zip.outputs.zip_sha256 }}\` |"
           echo "| **Image SHA256** | \`${{ steps.collect_stats.outputs.image_sha256 }}\` |"
-          echo "| **Kernel Uname** | \`${{ env.KERNEL_UNAME }}\` |"
-          echo "</details>"
-
+          echo "| **Warnings** | ${{ steps.collect_stats.outputs.warnings_count }} |"
+          echo "| **Compiler** | \`${CLANG_VERSION:-unknown}\` |"
+          echo "| **Artifact Name** | \`${{ env.ZIP_NAME }}\` |"
+          echo "| **AnyKernel3 SHA256** | \`${{ steps.create_zip.outputs.zip_sha256 }}\` |"
         } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload Debug Artifacts
@@ -3029,6 +2708,7 @@ runs:
       with:
         name: ${{ env.ZIP_NAME }}
         path: ${{ env.ARTIFACTS_FOLDER }}/${{ env.ZIP_NAME }}
+        archive: false
         compression-level: 0
         retention-days: 90
 
@@ -3040,6 +2720,7 @@ runs:
         path: |
           ${{ env.CCACHE_LOGFILE }}
           ${{ github.workspace }}/${{ env.OP_MODEL }}_${{ env.OP_OS_VERSION }}_${{ env.KERNEL_FULL_VER }}_ccache.log
+        archive: false
         compression-level: 0
         retention-days: 90
         if-no-files-found: ignore
@@ -3142,22 +2823,6 @@ runs:
         github_token: ${{ inputs.github_token }}
         working_dir: "./main-source"
         compression_level: 1
-
-    - name: 📤 Upload failure logs
-      if: ${{ failure() }}
-      continue-on-error: true
-      uses: actions/upload-artifact@v7
-      with:
-        name: failure_logs_${{ env.OP_MODEL }}_${{ env.OP_OS_VERSION }}_${{ env.KERNEL_FULL_VER }}
-        path: |
-          ${{ env.COMMON_KERNEL_FOLDER }}/build.log
-          ${{ env.COMMON_KERNEL_FOLDER }}/install.log
-          ${{ env.COMMON_KERNEL_FOLDER }}/out/.config
-          ${{ env.COMMON_KERNEL_FOLDER }}/out/include/generated/autoconf.h
-          /tmp/susfs_patch_${{ env.OP_MODEL }}_${{ env.KERNEL_FULL_VER }}.log
-          /tmp/adios_patch.log
-        if-no-files-found: ignore
-        retention-days: 14
 
     - name: 🧹 Cleanup on failure
       if: ${{ failure() }}
