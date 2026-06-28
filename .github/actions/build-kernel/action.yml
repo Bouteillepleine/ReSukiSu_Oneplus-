@@ -1801,7 +1801,7 @@ runs:
       run: |
         set -euo pipefail
         echo "Add BBR"
-        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
         CONFIG_TCP_CONG_ADVANCED=y
         CONFIG_TCP_CONG_BBR=y
         EOF
@@ -1813,7 +1813,7 @@ runs:
         set -euo pipefail
         echo "::group::Apply BBRv3 patches"
         cd "$COMMON_KERNEL_FOLDER"
-        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
         CONFIG_TCP_CONG_ADVANCED=y
         CONFIG_TCP_CONG_BBR3=y
         EOF
@@ -1843,7 +1843,7 @@ runs:
       run: |
         set -euo pipefail
         echo "Enable Important Net Schedulers (qdisc)"
-        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
         CONFIG_NET_SCH_CAKE=y
