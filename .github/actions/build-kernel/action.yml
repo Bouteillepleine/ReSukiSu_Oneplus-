@@ -1786,7 +1786,7 @@ runs:
 
         echo "::endgroup::"
 
-        - name: Add Tmpfs Support
+    - name: Add Tmpfs Support
       shell: bash
       run: |
         set -euo pipefail
