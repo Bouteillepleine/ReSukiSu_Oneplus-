@@ -705,7 +705,7 @@ runs:
     - name: Restore ccache cache
       id: restore-ccache-cache
       uses: ./action-source/.github/actions/cache/restore
-      if: ${{ inputs.clean == false || inputs.clean == 'false' }}
+      if: ${{ inputs.clean != 'true' }}
       with:
         cache_path: ${{ env.CCACHE_DIR }}
         cache_key: ${{ inputs.ksu_type }}-v3-${{ env.OP_MODEL }}-${{ env.OP_OS_VERSION }}-${{ env.KERNEL_FULL_VER }}-${{ env.CLANG_VERSION_SHORT }}
@@ -718,7 +718,7 @@ runs:
     - name: Restore LTO LD cache
       id: restore-lto-ld-cache
       uses: ./action-source/.github/actions/cache/restore
-      if: ${{ (inputs.clean == false || inputs.clean == 'false') && env.OP_LTO != 'none' }}
+      if: ${{ inputs.clean != 'true' && env.OP_LTO != 'none' }}
       with:
         cache_path: ${{ env.LDCACHE_DIR }}
         cache_key: ${{ inputs.ksu_type }}-v3-LTO-${{ env.OP_MODEL }}-${{ env.OP_OS_VERSION }}-${{ env.KERNEL_FULL_VER }}-${{ env.CLANG_VERSION_SHORT }}
@@ -734,26 +734,10 @@ runs:
         set -euo pipefail
         echo "::group::Check ccache"
 
+        
+        source "${GITHUB_ACTION_PATH}/ccache-env.sh"
+
         echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-
-        sanitize_ccache_env() {
-          unset CCACHE_DEPEND          || true
-          unset CCACHE_READONLY_DIRECT || true
-          unset CCACHE_COMPRESSION     || true
-          unset CCACHE_COMPRESSION_LEVEL || true
-          unset CCACHE_FILE_CLONE      || true
-          unset CCACHE_INODE_CACHE     || true
-
-          export CCACHE_COMPILERCHECK=content
-          export CCACHE_COMPRESS=true
-          export CCACHE_COMPRESSLEVEL=3
-          export CCACHE_DIRECT=true
-          export CCACHE_FILECLONE=true
-          export CCACHE_INODECACHE=true
-          export CCACHE_NOREADONLY_DIRECT=true
-          export CCACHE_NOHASHDIR=true
-          export CCACHE_IGNOREOPTIONS="--sysroot*"
-        }
 
         sanitize_ccache_env
 
@@ -2001,17 +1985,16 @@ runs:
         set +u
         source "$KERNEL_PLATFORM_FOLDER/build/kernel/_setup_env.sh" 2>/dev/null || true
         set -u
-        
+
         if [[ ! "${NPROC:-}" =~ ^[1-9][0-9]*$ ]]; then
           echo "::warning::NPROC not set or invalid ('${NPROC:-}'), falling back to nproc --all"
           NPROC="$(nproc --all)"
         fi
         echo "Build parallelism: $NPROC threads"
-
-        cat > "$COMMON_KERNEL_FOLDER/ld-wrapper" <<'EOF'
+        cat > "$COMMON_KERNEL_FOLDER/ld-wrapper" <<EOF
         #!/bin/bash
-        exec ld.lld "$@" \
-          --thinlto-cache-dir="${LDCACHE_DIR}" \
+        exec ld.lld "\$@" \\
+          --thinlto-cache-dir="${LDCACHE_DIR}" \\
           --thinlto-jobs="${NPROC}"
         EOF
         chmod +x "$COMMON_KERNEL_FOLDER/ld-wrapper"
@@ -2048,24 +2031,9 @@ runs:
         export HOSTCC="ccache clang"
         export HOSTCXX="ccache clang++"
 
-        sanitize_ccache_env() {
-          unset CCACHE_DEPEND          || true
-          unset CCACHE_READONLY_DIRECT || true
-          unset CCACHE_COMPRESSION     || true
-          unset CCACHE_COMPRESSION_LEVEL || true
-          unset CCACHE_FILE_CLONE      || true
-          unset CCACHE_INODE_CACHE     || true
-
-          export CCACHE_COMPILERCHECK=content
-          export CCACHE_COMPRESS=true
-          export CCACHE_COMPRESSLEVEL=3
-          export CCACHE_DIRECT=true
-          export CCACHE_FILECLONE=true
-          export CCACHE_INODECACHE=true
-          export CCACHE_NOREADONLY_DIRECT=true
-          export CCACHE_NOHASHDIR=true
-          export CCACHE_IGNOREOPTIONS="--sysroot*"
-        }
+        # FIX #17 — source shared helper instead of inlining the function
+        # shellcheck source=.github/actions/build-kernel/ccache-env.sh
+        source "${GITHUB_ACTION_PATH}/ccache-env.sh"
 
         sanitize_ccache_env
 
@@ -2185,7 +2153,7 @@ runs:
         echo "Build Configuration"
         echo "============================================"
         echo "Device:       ${OP_MODEL}"
-        echo "Kernel:       ${KERNEL_FULL_VER}"        
+        echo "Kernel:       ${KERNEL_FULL_VER}"
         echo "Threads:      ${NPROC}"
         echo "Optimization: ${{ inputs.optimize_level }}"
         echo "LTO:          $OP_LTO"
@@ -2206,7 +2174,7 @@ runs:
 
         BUILD_START="$(date +%s)"
         set -o pipefail
-        
+
         run_make() {
           sanitize_ccache_env
           make \
@@ -2269,7 +2237,7 @@ runs:
 
     - name: 📊 ccache Post-Build Statistics
       id: ccache_stats
-      if: ${{ success() && (inputs.clean == false || inputs.clean == 'false') }}
+      if: ${{ success() && inputs.clean != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -2828,7 +2796,6 @@ runs:
         cache_bucket: "lto-cache"
         debug: true
         github_token: ${{ inputs.github_token }}
-        working_dir: "./main-source"
         compression_level: 1
 
     - name: 🧹 Cleanup on failure
