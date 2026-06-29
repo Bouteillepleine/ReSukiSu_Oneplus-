@@ -2000,7 +2000,42 @@ runs:
             f.writelines(result)
         PYEOF2
     
-        echo "✅ BBR applied: rtnetlink.h kept patched, include/net/tcp.h selectively cleaned, selected .c files reverted"
+        echo "Reverting TCP_CONG_MASK to original value..."
+    
+        python3 - <<'PYEOF3'
+        import re
+        import sys
+    
+        path = 'include/net/tcp.h'
+    
+        with open(path, 'r') as f:
+            s = f.read()
+    
+        # Patched form is multi-line:
+        #   #define TCP_CONG_MASK	(TCP_CONG_NON_RESTRICTED | \
+        #   			 TCP_CONG_NEEDS_ECN | \
+        #   			 TCP_CONG_WANTS_CE_EVENTS)
+        pat = re.compile(
+            r'#define\s+TCP_CONG_MASK\s+\(TCP_CONG_NON_RESTRICTED\s*\|\s*\\\s*\n'
+            r'\s*TCP_CONG_NEEDS_ECN\s*\|\s*\\\s*\n'
+            r'\s*TCP_CONG_WANTS_CE_EVENTS\s*\)'
+        )
+    
+        new = '#define TCP_CONG_MASK\t(TCP_CONG_NON_RESTRICTED | TCP_CONG_NEEDS_ECN)'
+    
+        s2, n = pat.subn(new, s)
+    
+        if n != 1:
+            print('ERROR: TCP_CONG_MASK multi-line pattern not matched', file=sys.stderr)
+            sys.exit(1)
+    
+        print(f'Reverted TCP_CONG_MASK to original ({n} replacement)')
+    
+        with open(path, 'w') as f:
+            f.write(s2)
+        PYEOF3
+    
+        echo "✅ BBR applied: rtnetlink.h kept, net/tcp.h cleaned (kabi+rate_sample+TCP_CONG_MASK reverted), .c reverted"
         echo "::endgroup::"
 
     - name: Add TTL Target Support
