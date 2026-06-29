@@ -2133,6 +2133,7 @@ runs:
         s = open(path).read()
 
         # Replace KMI-breaking rate_sample extension reads with tcp_sock carriers.
+        # This covers pointer-style accesses: rs->field.
         replacements = [
             ('rs->tx_in_flight', 'tcp_sk(sk)->bbr_tx_in_flight'),
             ('rs->is_acking_tlp_retrans_seq', 'tcp_sk(sk)->bbr_is_acking_tlp_retrans_seq'),
@@ -2146,7 +2147,7 @@ runs:
             s = s.replace(old, new)
             count += c
 
-        # Keep signed semantics for BBRv3 loss delta users.
+        # Keep signed semantics for BBRv3 loss delta users using rs->lost.
         s, c = re.subn(
             r'rs->lost\s*>',
             r'(s32)tcp_sk(sk)->bbr_lost >',
@@ -2168,7 +2169,45 @@ runs:
         )
         count += c
 
-        print(f'tcp_bbr3.c: carrier read replacements={count}')
+        # Replace object-style local rate_sample accesses: rs.field.
+        # These appear in recovery helper paths using a stack rate_sample.
+        dot_replacements = [
+            (
+                r'rs\.tx_in_flight\s*=\s*scb->tx\.in_flight;',
+                'tcp_sk(sk)->bbr_tx_in_flight = scb->tx.in_flight;',
+            ),
+            (
+                r'rs\.lost\s*=\s*tp->lost\s*-\s*scb->tx\.lost;',
+                'tcp_sk(sk)->bbr_lost = tp->lost - scb->tx.lost;',
+            ),
+            (
+                r'rs\.tx_in_flight\s*=\s*bbr_inflight_hi_from_lost_skb\(sk,\s*&rs,\s*skb\);',
+                'tcp_sk(sk)->bbr_tx_in_flight = bbr_inflight_hi_from_lost_skb(sk, &rs, skb);',
+            ),
+            (
+                r'rs\.lost\s*=\s*1;\s*/\* TLP probe repaired loss of a single segment \*/',
+                'tcp_sk(sk)->bbr_lost = 1;\t/* TLP probe repaired loss of a single segment */',
+            ),
+            (
+                r'rs\.tx_in_flight\s*=\s*bbr->inflight_latest\s*\+\s*rs\.lost;',
+                'tcp_sk(sk)->bbr_tx_in_flight = bbr->inflight_latest + tcp_sk(sk)->bbr_lost;',
+            ),
+        ]
+
+        dot_count = 0
+
+        for pattern, repl in dot_replacements:
+            s, c = re.subn(pattern, repl, s)
+            dot_count += c
+
+        count += dot_count
+
+        print(f'tcp_bbr3.c: carrier read/write replacements={count}')
+        print(f'tcp_bbr3.c: object-style rate_sample replacements={dot_count}')
+
+        if dot_count != 5:
+            print(f'ERROR: tcp_bbr3.c object-style edits={dot_count} (expected 5)', file=sys.stderr)
+            sys.exit(1)
 
         # Freeze inet_diag output to baseline tcp_bbr_info fields only.
         # inet_diag.h was reverted, so remove writes to extended tcp_bbr_info fields.
@@ -2231,15 +2270,19 @@ runs:
             else:
                 print(f'tcp_bbr3.c: bbr_get_phase still has uses={uses}; kept')
 
+        # Fail fast on stale removed rate_sample extension fields.
         leftover = re.findall(
-            r'rs->(tx_in_flight|is_ece|is_acking_tlp_retrans_seq|prior_lost)|rs->lost\s*[>,-]',
+            r'rs->(tx_in_flight|is_ece|is_acking_tlp_retrans_seq|prior_lost)'
+            r'|rs->lost\s*[>,-]'
+            r'|rs\.(tx_in_flight|lost|prior_lost|is_ece|is_acking_tlp_retrans_seq)',
             s,
         )
 
         if leftover:
-            print(f'ERROR: leftover rs-> refs: {leftover}', file=sys.stderr)
+            print(f'ERROR: leftover removed rate_sample refs: {leftover}', file=sys.stderr)
             sys.exit(1)
 
+        # Fail fast if extended diag writes survived while inet_diag.h is frozen.
         diag_leftover = [f for f in extended_fields if f'bbr_info->{f}' in s]
 
         if diag_leftover:
