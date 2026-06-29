@@ -1801,7 +1801,7 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::Add BBR"
-    
+
         {
           echo "CONFIG_TCP_CONG_ADVANCED=y"
           echo "CONFIG_TCP_CONG_BBR=y"
@@ -1812,15 +1812,15 @@ runs:
           echo "CONFIG_NET_SCH_PIE=y"
           echo "CONFIG_NET_SCH_FQ_PIE=y"
         } >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
-    
+
         echo "Applying BBRv3 patch..."
         cd "$COMMON_KERNEL_FOLDER"
-    
+
         BBRV3_PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.12.patch"
         BBRV3_PATCH_FILE="$(mktemp /tmp/bbrv3_XXXXXX.patch)"
         trap 'rm -f "$BBRV3_PATCH_FILE"' EXIT
         curl -fsSL "$BBRV3_PATCH_URL" -o "$BBRV3_PATCH_FILE"
-    
+
         # Revert these after patching (not needed for STEP 1)
         cp include/uapi/linux/inet_diag.h include/uapi/linux/inet_diag.h.orig
         cp net/ipv4/tcp_input.c net/ipv4/tcp_input.c.orig
@@ -1829,9 +1829,9 @@ runs:
         cp net/ipv4/tcp_rate.c net/ipv4/tcp_rate.c.orig
         cp net/ipv4/tcp.c net/ipv4/tcp.c.orig
         cp net/ipv4/tcp_cong.c net/ipv4/tcp_cong.c.orig
-    
+
         patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
-    
+
         # KEEP patched: include/net/tcp.h, include/linux/tcp.h, include/uapi/linux/rtnetlink.h
         # Revert: inet_diag.h and all selected .c files
         mv include/uapi/linux/inet_diag.h.orig include/uapi/linux/inet_diag.h
@@ -1841,52 +1841,52 @@ runs:
         mv net/ipv4/tcp_rate.c.orig net/ipv4/tcp_rate.c
         mv net/ipv4/tcp.c.orig net/ipv4/tcp.c
         mv net/ipv4/tcp_cong.c.orig net/ipv4/tcp_cong.c
-    
+
         echo "net/tcp.h: enum->#define fix..."
-    
+
         python3 - <<'PYEOF5'
         import sys
-    
+
         path = 'include/net/tcp.h'
-    
+
         with open(path) as f:
             lines = f.readlines()
-    
+
         result = []
         i = 0
         fixed = 0
-    
+
         while i < len(lines):
             line = lines[i]
-    
+
             if line.strip() == '#ifndef __GENKSYMS__':
                 j = i + 1
                 is_enum = False
                 depth = 0
-    
+
                 while j < len(lines):
                     s = lines[j].strip()
-    
+
                     if 'CA_EVENT_TLP_RECOVERY' in lines[j]:
                         is_enum = True
                         break
-    
+
                     if s.startswith(('#ifdef', '#ifndef')) or s.startswith('#if '):
                         depth += 1
                     elif s == '#endif':
                         if depth == 0:
                             break
                         depth -= 1
-    
+
                     j += 1
-    
+
                 if is_enum:
                     i += 1
                     depth = 0
-    
+
                     while i < len(lines):
                         s = lines[i].strip()
-    
+
                         if s.startswith(('#ifdef', '#ifndef')) or s.startswith('#if '):
                             depth += 1
                         elif s == '#endif':
@@ -1894,12 +1894,12 @@ runs:
                                 i += 1
                                 break
                             depth -= 1
-    
+
                         i += 1
-    
+
                     while i < len(lines):
                         result.append(lines[i])
-    
+
                         if lines[i].strip() == '};':
                             result.append('\n')
                             result.append('/* KMI-safe: NOT added to enum tcp_ca_event (STG sees through __GENKSYMS__). */\n')
@@ -1907,69 +1907,69 @@ runs:
                             i += 1
                             fixed += 1
                             break
-    
+
                         i += 1
-    
+
                     continue
-    
+
             result.append(line)
             i += 1
-    
+
         if fixed != 1:
             print('ERROR enum fix', file=sys.stderr)
             sys.exit(1)
-    
+
         print(f'enum->#define ({fixed})')
-    
+
         with open(path, 'w') as f:
             f.writelines(result)
         PYEOF5
-    
+
         echo "net/tcp.h: revert rate_sample growth (keep KMI-frozen)..."
-    
+
         python3 - <<'PYEOF2'
         import sys
-    
+
         path = 'include/net/tcp.h'
-    
+
         with open(path) as f:
             lines = f.readlines()
-    
+
         result = []
         i = 0
         removed = 0
-    
+
         while i < len(lines):
             line = lines[i]
-    
+
             if line.strip() == '#ifndef __GENKSYMS__':
                 j = i + 1
                 is_rs = False
                 depth = 0
-    
+
                 while j < len(lines):
                     s = lines[j].strip()
-    
+
                     if 'is_acking_tlp_retrans_seq' in lines[j]:
                         is_rs = True
                         break
-    
+
                     if s.startswith(('#ifdef', '#ifndef')) or s.startswith('#if '):
                         depth += 1
                     elif s == '#endif':
                         if depth == 0:
                             break
                         depth -= 1
-    
+
                     j += 1
-    
+
                 if is_rs:
                     i += 1
                     depth = 0
-    
+
                     while i < len(lines):
                         s = lines[i].strip()
-    
+
                         if s.startswith(('#ifdef', '#ifndef')) or s.startswith('#if '):
                             depth += 1
                         elif s == '#endif':
@@ -1978,83 +1978,88 @@ runs:
                                 removed += 1
                                 break
                             depth -= 1
-    
+
                         i += 1
-    
+
                     continue
-    
+
             result.append(line)
             i += 1
-    
+
         if removed != 1:
             print('ERROR rate_sample revert', file=sys.stderr)
             sys.exit(1)
-    
+
         print(f'rate_sample reverted ({removed})')
-    
+
         with open(path, 'w') as f:
             f.writelines(result)
         PYEOF2
-    
+
         echo "linux/tcp.h: relocate BBRv3 fields into KABI-safe storage..."
         echo "Debug: tcp_sock BBR/KABI snippets before relocation..."
         grep -nE "fast_ack_mode|tlp_orig_data_app_limited|unused:|bbr_is_ece|bbr_is_acking|ANDROID_KABI_(RESERVE|USE)" include/linux/tcp.h | head -100 || true
-    
+
         python3 - <<'PYEOFL'
         import sys
         from pathlib import Path
-    
+
         path = Path('include/linux/tcp.h')
         kabi_path = Path('include/linux/android_kabi.h')
-    
+
         s = path.read_text()
         kabi = kabi_path.read_text() if kabi_path.exists() else ''
         changed = 0
-    
+        T = chr(9)
+
         # --- A) two per-ACK bits into the patched tcp_sock bitfield (uses the 'unused:2') ---
         if 'bbr_is_ece' not in s:
-            old_a = '''			fast_ack_mode:2, /* which fast ack mode ? */
-    			tlp_orig_data_app_limited:1, /* app-limited before TLP rtx? */
-    			unused:2;'''
-    
-            new_a = '''			fast_ack_mode:2, /* which fast ack mode ? */
-    			tlp_orig_data_app_limited:1, /* app-limited before TLP rtx? */
-    			bbr_is_ece:1,			/* BBRv3: ACK had ECE? */
-    			bbr_is_acking_tlp_retrans_seq:1; /* BBRv3: ACKed TLP rtx seq? */'''
-    
+            old_a = (
+                T + T + T + 'fast_ack_mode:2, /* which fast ack mode ? */\n'
+                + T + T + T + 'tlp_orig_data_app_limited:1, /* app-limited before TLP rtx? */\n'
+                + T + T + T + 'unused:2;'
+            )
+
+            new_a = (
+                T + T + T + 'fast_ack_mode:2, /* which fast ack mode ? */\n'
+                + T + T + T + 'tlp_orig_data_app_limited:1, /* app-limited before TLP rtx? */\n'
+                + T + T + T + 'bbr_is_ece:1,' + T + T + T + '/* BBRv3: ACK had ECE? */\n'
+                + T + T + T + 'bbr_is_acking_tlp_retrans_seq:1; /* BBRv3: ACKed TLP rtx seq? */'
+            )
+
             if old_a not in s:
                 print('ERROR: tcp_sock bitfield block (unused:2) not found', file=sys.stderr)
                 sys.exit(1)
-    
+
             s = s.replace(old_a, new_a, 1)
             changed += 1
             print('linux/tcp.h: bbr bitfields applied')
         else:
             print('linux/tcp.h: bbr bitfields already present')
-    
+
         # --- B) two u32 into the ANDROID_KABI_RESERVE(1) slot ---
         if 'bbr_tx_in_flight' not in s:
             if 'ANDROID_KABI_USE2' not in kabi:
                 print('ERROR: ANDROID_KABI_USE2 not defined in include/linux/android_kabi.h', file=sys.stderr)
                 sys.exit(1)
-    
-            old_b = '\tANDROID_KABI_RESERVE(1);'
-            new_b = '\tANDROID_KABI_USE2(1, u32 bbr_tx_in_flight, u32 bbr_lost);'
-    
+
+            old_b = T + 'ANDROID_KABI_RESERVE(1);'
+            new_b = T + 'ANDROID_KABI_USE2(1, u32 bbr_tx_in_flight, u32 bbr_lost);'
+
             if old_b not in s:
                 print('ERROR: ANDROID_KABI_RESERVE(1) not found', file=sys.stderr)
                 sys.exit(1)
-    
+
             s = s.replace(old_b, new_b, 1)
             changed += 1
             print('linux/tcp.h: ANDROID_KABI_USE2 applied for bbr_tx_in_flight/bbr_lost')
         else:
             print('linux/tcp.h: bbr_tx_in_flight/bbr_lost already present')
-    
+
         path.write_text(s)
         print(f'linux/tcp.h relocation complete; changed blocks={changed}')
         PYEOFL
-    
+
         echo "✅ STEP1: KABI storage in place (rate_sample frozen, enum #define); .c reverted; BBR3 off"
         echo "::endgroup::"
 
