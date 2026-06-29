@@ -1827,93 +1827,31 @@ runs:
     
         echo "Saving original TCP source files..."
     
-        cp net/ipv4/tcp_input.c net/ipv4/tcp_input.c.orig
-        cp net/ipv4/tcp_output.c net/ipv4/tcp_output.c.orig
-        cp net/ipv4/tcp_minisocks.c net/ipv4/tcp_minisocks.c.orig
-        cp net/ipv4/tcp_rate.c net/ipv4/tcp_rate.c.orig
-        cp net/ipv4/tcp.c net/ipv4/tcp.c.orig
-        cp net/ipv4/tcp_cong.c net/ipv4/tcp_cong.c.orig
-    
+        # Save originals before patching
+        cp include/linux/tcp.h              include/linux/tcp.h.orig
+        cp include/net/tcp.h                include/net/tcp.h.orig
+        cp include/uapi/linux/inet_diag.h   include/uapi/linux/inet_diag.h.orig
+        cp net/ipv4/tcp_input.c             net/ipv4/tcp_input.c.orig
+        cp net/ipv4/tcp_output.c            net/ipv4/tcp_output.c.orig
+        cp net/ipv4/tcp_minisocks.c         net/ipv4/tcp_minisocks.c.orig
+        cp net/ipv4/tcp_rate.c              net/ipv4/tcp_rate.c.orig
+        cp net/ipv4/tcp.c                   net/ipv4/tcp.c.orig
+        cp net/ipv4/tcp_cong.c              net/ipv4/tcp_cong.c.orig
+      
         patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
-    
-        echo "Reverting selected TCP .c files..."
-    
-        mv net/ipv4/tcp_input.c.orig net/ipv4/tcp_input.c
-        mv net/ipv4/tcp_output.c.orig net/ipv4/tcp_output.c
-        mv net/ipv4/tcp_minisocks.c.orig net/ipv4/tcp_minisocks.c
-        mv net/ipv4/tcp_rate.c.orig net/ipv4/tcp_rate.c
-        mv net/ipv4/tcp.c.orig net/ipv4/tcp.c
-        mv net/ipv4/tcp_cong.c.orig net/ipv4/tcp_cong.c
-    
-        echo "Reverting tcp_skb_cb KABI placeholder block..."
-    
-        python3 - <<'PYEOF'
-        import sys
-    
-        path = "include/net/tcp.h"
-    
-        with open(path, "r") as f:
-            lines = f.readlines()
-    
-        result = []
-        i = 0
-        replaced = 0
-    
-        while i < len(lines):
-            line = lines[i]
-    
-            if line.strip() == "#ifdef __GENKSYMS__":
-                j = i + 1
-                is_kabi = False
-    
-                while j < len(lines) and lines[j].strip() not in ("#else", "#endif"):
-                    if "u64" in lines[j] and "first_tx_mstamp" in lines[j]:
-                        is_kabi = True
-                        break
-                    j += 1
-    
-                if is_kabi:
-                    i += 1
-    
-                    while i < len(lines) and lines[i].strip() != "#else":
-                        result.append(lines[i])
-                        i += 1
-    
-                    if i < len(lines) and lines[i].strip() == "#else":
-                        i += 1
-    
-                    depth = 0
-    
-                    while i < len(lines):
-                        s = lines[i].strip()
-    
-                        if s.startswith(("#ifdef", "#ifndef")) or s.startswith("#if "):
-                            depth += 1
-                        elif s == "#endif":
-                            if depth == 0:
-                                i += 1
-                                replaced += 1
-                                break
-                            depth -= 1
-    
-                        i += 1
-    
-                    continue
-    
-            result.append(line)
-            i += 1
-    
-        if replaced == 0:
-            print("ERROR: kabi_placeholder not found", file=sys.stderr)
-            sys.exit(1)
-    
-        print(f"Reverted {replaced} kabi_placeholder block(s) - u64 fields restored")
-    
-        with open(path, "w") as f:
-            f.writelines(result)
-        PYEOF
-    
-        echo "✅ BBR applied: BBR enabled, BBR3 forced off for test, selected .c files reverted"
+
+        # Restore EVERYTHING except rtnetlink.h
+        mv include/linux/tcp.h.orig              include/linux/tcp.h
+        mv include/net/tcp.h.orig                include/net/tcp.h
+        mv include/uapi/linux/inet_diag.h.orig   include/uapi/linux/inet_diag.h
+        mv net/ipv4/tcp_input.c.orig             net/ipv4/tcp_input.c
+        mv net/ipv4/tcp_output.c.orig            net/ipv4/tcp_output.c
+        mv net/ipv4/tcp_minisocks.c.orig         net/ipv4/tcp_minisocks.c
+        mv net/ipv4/tcp_rate.c.orig              net/ipv4/tcp_rate.c
+        mv net/ipv4/tcp.c.orig                   net/ipv4/tcp.c
+        mv net/ipv4/tcp_cong.c.orig              net/ipv4/tcp_cong.c
+
+        echo "✅ BBR applied: only rtnetlink.h patched (RTAX_FEATURE_MASK test)"
         echo "::endgroup::"
 
     - name: Add TTL Target Support
