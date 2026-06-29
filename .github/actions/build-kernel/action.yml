@@ -1801,6 +1801,7 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::Add BBR"
+    
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
         CONFIG_TCP_CONG_ADVANCED=y
         CONFIG_TCP_CONG_BBR=y
@@ -1814,25 +1815,28 @@ runs:
     
         echo "Applying BBRv3 patch..."
         cd "$COMMON_KERNEL_FOLDER"
+    
         BBRV3_PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.12.patch"
         BBRV3_PATCH_FILE="$(mktemp /tmp/bbrv3_XXXXXX.patch)"
+    
         trap 'rm -f "$BBRV3_PATCH_FILE"' EXIT
+    
         curl -fsSL "$BBRV3_PATCH_URL" -o "$BBRV3_PATCH_FILE"
     
         # Save originals before patching
-        cp net/ipv4/tcp_input.c   net/ipv4/tcp_input.c.orig
-        cp net/ipv4/tcp_output.c  net/ipv4/tcp_output.c.orig
+        cp net/ipv4/tcp_input.c net/ipv4/tcp_input.c.orig
+        cp net/ipv4/tcp_output.c net/ipv4/tcp_output.c.orig
         cp net/ipv4/tcp_minisocks.c net/ipv4/tcp_minisocks.c.orig
     
         patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
     
         # Restore core TCP files — keeps struct changes, tcp_rate.c, tcp_bbr3.c
         # Reverts changes that conflict with OnePlus KERN_TUNING vendor hooks
-        mv net/ipv4/tcp_input.c.orig   net/ipv4/tcp_input.c
-        mv net/ipv4/tcp_output.c.orig  net/ipv4/tcp_output.c
+        mv net/ipv4/tcp_input.c.orig net/ipv4/tcp_input.c
+        mv net/ipv4/tcp_output.c.orig net/ipv4/tcp_output.c
         mv net/ipv4/tcp_minisocks.c.orig net/ipv4/tcp_minisocks.c
     
-        echo "✅ BBR + BBRv3 applied
+        echo "✅ BBR + BBRv3 applied"
         echo "::endgroup::"
 
     - name: Add TTL Target Support
