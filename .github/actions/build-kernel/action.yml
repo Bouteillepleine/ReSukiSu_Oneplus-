@@ -1801,7 +1801,6 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::Add BBR"
-
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
         CONFIG_TCP_CONG_ADVANCED=y
         CONFIG_TCP_CONG_BBR=y
@@ -1811,34 +1810,24 @@ runs:
         CONFIG_NET_SCH_PIE=y
         CONFIG_NET_SCH_FQ_PIE=y
         EOF
-
+    
         echo "Applying BBRv3 patch..."
         cd "$COMMON_KERNEL_FOLDER"
-
         BBRV3_PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.12.patch"
         BBRV3_PATCH_FILE="$(mktemp /tmp/bbrv3_XXXXXX.patch)"
         trap 'rm -f "$BBRV3_PATCH_FILE"' EXIT
-
-        if ! curl -fsSL "$BBRV3_PATCH_URL" -o "$BBRV3_PATCH_FILE"; then
-          echo "::error::Failed to download BBRv3 patch"
-          exit 1
-        fi
-
-        if [ "$(wc -c < "$BBRV3_PATCH_FILE")" -lt 1024 ]; then
-          echo "::error::BBRv3 patch download too small"
-          exit 1
-        fi
-
+        curl -fsSL "$BBRV3_PATCH_URL" -o "$BBRV3_PATCH_FILE"
         patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
-
-        # Compile BBRv3 in but keep cubic as default for now
+        git checkout -- net/ipv4/tcp_input.c
+        git checkout -- net/ipv4/tcp_output.c
+        git checkout -- net/ipv4/tcp_minisocks.c
+    
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
-        CONFIG_TCP_CONG_BBR3=y
+        CONFIG_TCP_CONG_BBR3=y        
         EOF
-
         echo "✅ BBR + BBRv3 applied"
-        echo "::endgroup::"        
-        
+        echo "::endgroup::"
+
     - name: Add TTL Target Support
       if: ${{ env.OP_TTL == 'true' }}
       shell: bash
