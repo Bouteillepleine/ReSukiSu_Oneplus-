@@ -1819,25 +1819,22 @@ runs:
         BBRV3_PATCH_FILE="$(mktemp /tmp/bbrv3_XXXXXX.patch)"
         trap 'rm -f "$BBRV3_PATCH_FILE"' EXIT
         curl -fsSL "$BBRV3_PATCH_URL" -o "$BBRV3_PATCH_FILE"
-    
-        # Save ALL modified files before patching
+
         cp include/linux/tcp.h              include/linux/tcp.h.orig
-        # include/net/tcp.h NOT saved — leave it patched
+        # include/net/tcp.h  — NOT saved, left patched
         cp include/uapi/linux/inet_diag.h   include/uapi/linux/inet_diag.h.orig
-        cp include/uapi/linux/rtnetlink.h   include/uapi/linux/rtnetlink.h.orig
+        # include/uapi/linux/rtnetlink.h — NOT saved, left patched
         cp net/ipv4/tcp_input.c             net/ipv4/tcp_input.c.orig
         cp net/ipv4/tcp_output.c            net/ipv4/tcp_output.c.orig
         cp net/ipv4/tcp_minisocks.c         net/ipv4/tcp_minisocks.c.orig
         cp net/ipv4/tcp_rate.c              net/ipv4/tcp_rate.c.orig
         cp net/ipv4/tcp.c                   net/ipv4/tcp.c.orig
         cp net/ipv4/tcp_cong.c              net/ipv4/tcp_cong.c.orig
-    
+      
         patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
-    
-        # Restore everything EXCEPT include/net/tcp.h
+      
         mv include/linux/tcp.h.orig              include/linux/tcp.h
         mv include/uapi/linux/inet_diag.h.orig   include/uapi/linux/inet_diag.h
-        mv include/uapi/linux/rtnetlink.h.orig   include/uapi/linux/rtnetlink.h
         mv net/ipv4/tcp_input.c.orig             net/ipv4/tcp_input.c
         mv net/ipv4/tcp_output.c.orig            net/ipv4/tcp_output.c
         mv net/ipv4/tcp_minisocks.c.orig         net/ipv4/tcp_minisocks.c
