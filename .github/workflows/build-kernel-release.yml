@@ -495,21 +495,18 @@ jobs:
             }'
           )
 
-          merged_matrix=$(echo "$merged_matrix" | jq \
-            --argjson hashes "$susfs_hashes_json" \
-            '[.[] | . + {susfs_resolved_hash: ($hashes["\(.android_version)-\(.kernel_version)"] // "unknown")}]'
-          )
-
           merged_matrix=$(echo "$merged_matrix" | jq '
             sort_by(
               (.os_version | gsub("OOS"; "") | tonumber? // 0) * -1,
               .model
             )
           ')
+          merged_matrix=$(echo "$merged_matrix" | jq --arg rid "${{ github.run_id }}" \
+            '. + {_run_id: $rid}')
 
           echo "$merged_matrix" | jq '.' > matrix.json
 
-          wrapped=$(jq -n --argjson items "$merged_matrix" '{ include: $items }')
+          wrapped=$(jq -n --argjson items "$(echo "$merged_matrix" | jq 'del(._run_id)')" '{ include: $items }')
           echo "matrix=$(jq -c . <<< "$wrapped")" >> "$GITHUB_OUTPUT"
 
           echo "::endgroup::"
@@ -1067,6 +1064,37 @@ jobs:
           merge-multiple: true
           skip-decompress: true
 
+      - name: ✅ Validate matrix artifact run provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MATRIX_FILE="./downloaded-artifacts/matrix.json"
+
+          if [ ! -f "$MATRIX_FILE" ]; then
+            echo "::error::matrix.json not found in downloaded artifacts"
+            exit 1
+          fi
+
+          ARTIFACT_RUN_ID="$(jq -r '._run_id // empty' "$MATRIX_FILE")"
+
+          if [ -z "$ARTIFACT_RUN_ID" ]; then
+            echo "::error::matrix.json has no _run_id field. Was it produced by an older version of this workflow?"
+            echo "  Re-run the full build (set-op-model + build + trigger-release) to generate a matrix with provenance."
+            exit 1
+          fi
+
+          CURRENT_RUN_ID="${{ github.run_id }}"
+
+          if [ "$ARTIFACT_RUN_ID" != "$CURRENT_RUN_ID" ]; then
+            echo "::error::matrix.json was produced by run $ARTIFACT_RUN_ID, but this is run $CURRENT_RUN_ID."
+            echo "  This usually means a stale artifact from a previous run was picked up."
+            echo "  Delete the old 'build-matrix' artifact and re-run."
+            exit 1
+          fi
+
+          echo "✅ matrix.json provenance verified (run $CURRENT_RUN_ID)"
+
       - name: 🔐 Generate Checksums
         shell: bash
         run: |
@@ -1436,7 +1464,7 @@ jobs:
 
           ---
 
-          **⚡ Built with ❤️ by the community**
+          **⚡ Built with passion by the community**
           EOF
 
           echo "--- Final Release Notes ---"
