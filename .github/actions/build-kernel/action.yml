@@ -1801,6 +1801,7 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::Add BBR"
+
         {
           echo "CONFIG_TCP_CONG_ADVANCED=y"
           echo "CONFIG_TCP_CONG_BBR=y"
@@ -1811,12 +1812,46 @@ runs:
           echo "CONFIG_NET_SCH_PIE=y"
           echo "CONFIG_NET_SCH_FQ_PIE=y"
         } >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
-    
+
         cd "$COMMON_KERNEL_FOLDER"
-        PATCH_URL="https://raw.githubusercontent.com/<you>/<repo>/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.12.patch"
-        PF="$(mktemp /tmp/bbrv3_XXXXXX.patch)"; trap 'rm -f "$PF"' EXIT
+
+        PATCH_BASE_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/common/bbrv3"
+        PATCH_NAME="0001-net-tcp-backport-BBRv3-to-${ANDROID_VER}-${KERNEL_VER}.patch"
+        PATCH_URL="$PATCH_BASE_URL/$PATCH_NAME"
+
+        echo "Using BBRv3 patch URL: $PATCH_URL"
+
+        PF="$(mktemp /tmp/bbrv3_XXXXXX.patch)"
+        trap 'rm -f "$PF"' EXIT
+
         curl -fsSL "$PATCH_URL" -o "$PF"
+
         patch -p1 --forward -F 3 < "$PF"
+
+        if [ "$ANDROID_VER" = "android12" ] && [ "$KERNEL_VER" = "5.10" ]; then
+          if ! grep -qF 'int proc_dou8vec_minmax(' ./include/linux/sysctl.h; then
+            SYSCTL_ADD_URL="$PATCH_BASE_URL/sysctl_add_proc_dou8vec_minmax.patch"
+            SYSCTL_FIX_URL="$PATCH_BASE_URL/sysctl_fix_data-races_in_proc_dou8vec_minmax.patch"
+
+            SYSCTL_ADD_PATCH="$(mktemp /tmp/sysctl_add_XXXXXX.patch)"
+            SYSCTL_FIX_PATCH="$(mktemp /tmp/sysctl_fix_XXXXXX.patch)"
+
+            trap 'rm -f "$PF" "$SYSCTL_ADD_PATCH" "$SYSCTL_FIX_PATCH"' EXIT
+
+            echo "Applying Android 12 / 5.10 sysctl compatibility patches..."
+            echo "Using sysctl add patch URL: $SYSCTL_ADD_URL"
+            echo "Using sysctl fix patch URL: $SYSCTL_FIX_URL"
+
+            curl -fsSL "$SYSCTL_ADD_URL" -o "$SYSCTL_ADD_PATCH"
+            curl -fsSL "$SYSCTL_FIX_URL" -o "$SYSCTL_FIX_PATCH"
+
+            patch -p1 --forward -F 3 < "$SYSCTL_ADD_PATCH"
+            patch -p1 --forward -F 3 < "$SYSCTL_FIX_PATCH"
+          else
+            echo "proc_dou8vec_minmax already exists; skipping sysctl compatibility patches"
+          fi
+        fi
+
         echo "✅ BBRv3 applied"
         echo "::endgroup::"
     
