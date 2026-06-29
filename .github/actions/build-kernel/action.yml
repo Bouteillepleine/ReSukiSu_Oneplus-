@@ -1801,7 +1801,7 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::Add BBR"
-
+    
         {
           echo "CONFIG_TCP_CONG_ADVANCED=y"
           echo "CONFIG_TCP_CONG_BBR=y"
@@ -1812,76 +1812,51 @@ runs:
           echo "CONFIG_NET_SCH_PIE=y"
           echo "CONFIG_NET_SCH_FQ_PIE=y"
         } >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
-
+    
         cd "$COMMON_KERNEL_FOLDER"
-
+    
         PATCH_BASE_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/common/bbrv3"
-
+    
         case "${ANDROID_VER}-${KERNEL_VER}" in
           android12-5.10)
-            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android12-5.10.patch"
-            ;;
+            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android12-5.10.patch" ;;
           android13-5.15)
-            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android13-5.15.patch"
-            ;;
+            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android13-5.15.patch" ;;
           android14-6.1)
-            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android14-6.1.patch"
-            ;;
+            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android14-6.1.patch" ;;
           android15-6.6)
-            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android15-6.6.patch"
-            ;;
+            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android15-6.6.patch" ;;
           android15-6.12|android16-6.12)
-            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android15-6.12.patch"
-            ;;
+            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android15-6.12-KMI-safe.patch" ;;
           *)
             echo "ERROR: no known BBRv3 patch mapping for ${ANDROID_VER}-${KERNEL_VER}"
-            echo "Available mappings:"
-            echo "  android12-5.10"
-            echo "  android13-5.15"
-            echo "  android14-6.1"
-            echo "  android15-6.6"
-            echo "  android15-6.12"
-            echo "  android16-6.12 -> android15-6.12"
-            exit 1
-            ;;
+            exit 1 ;;
         esac
-
+    
         PATCH_URL="$PATCH_BASE_URL/$PATCH_NAME"
-
         echo "Using BBRv3 patch URL: $PATCH_URL"
-
+    
         PF="$(mktemp /tmp/bbrv3_XXXXXX.patch)"
         trap 'rm -f "$PF"' EXIT
-
         curl -fsSL "$PATCH_URL" -o "$PF"
-
         patch -p1 --forward -F 3 < "$PF"
-
+    
+        # ---- Android 12 / 5.10 sysctl compatibility (unchanged) ----
         if [ "$ANDROID_VER" = "android12" ] && [ "$KERNEL_VER" = "5.10" ]; then
           if ! grep -qF 'int proc_dou8vec_minmax(' ./include/linux/sysctl.h; then
-            SYSCTL_ADD_URL="$PATCH_BASE_URL/sysctl_add_proc_dou8vec_minmax.patch"
-            SYSCTL_FIX_URL="$PATCH_BASE_URL/sysctl_fix_data-races_in_proc_dou8vec_minmax.patch"
-
             SYSCTL_ADD_PATCH="$(mktemp /tmp/sysctl_add_XXXXXX.patch)"
             SYSCTL_FIX_PATCH="$(mktemp /tmp/sysctl_fix_XXXXXX.patch)"
-
             trap 'rm -f "$PF" "$SYSCTL_ADD_PATCH" "$SYSCTL_FIX_PATCH"' EXIT
-
-            echo "Applying Android 12 / 5.10 sysctl compatibility patches..."
-            echo "Using sysctl add patch URL: $SYSCTL_ADD_URL"
-            echo "Using sysctl fix patch URL: $SYSCTL_FIX_URL"
-
-            curl -fsSL "$SYSCTL_ADD_URL" -o "$SYSCTL_ADD_PATCH"
-            curl -fsSL "$SYSCTL_FIX_URL" -o "$SYSCTL_FIX_PATCH"
-
+            curl -fsSL "$PATCH_BASE_URL/sysctl_add_proc_dou8vec_minmax.patch" -o "$SYSCTL_ADD_PATCH"
+            curl -fsSL "$PATCH_BASE_URL/sysctl_fix_data-races_in_proc_dou8vec_minmax.patch" -o "$SYSCTL_FIX_PATCH"
             patch -p1 --forward -F 3 < "$SYSCTL_ADD_PATCH"
             patch -p1 --forward -F 3 < "$SYSCTL_FIX_PATCH"
           else
             echo "proc_dou8vec_minmax already exists; skipping sysctl compatibility patches"
           fi
         fi
-
-        echo "✅ BBRv3 applied"
+    
+        echo "✅ BBRv3 applied (KMI-safe)"
         echo "::endgroup::"
     
     - name: Add TTL Target Support
