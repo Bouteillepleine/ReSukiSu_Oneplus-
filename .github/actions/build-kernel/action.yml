@@ -1805,6 +1805,7 @@ runs:
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
         CONFIG_TCP_CONG_ADVANCED=y
         CONFIG_TCP_CONG_BBR=y
+        CONFIG_TCP_CONG_BBR3=y
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
         CONFIG_NET_SCH_CAKE=y
@@ -1817,33 +1818,65 @@ runs:
     
         BBRV3_PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.12.patch"
         BBRV3_PATCH_FILE="$(mktemp /tmp/bbrv3_XXXXXX.patch)"
-        trap 'rm -f "$BBRV3_PATCH_FILE"' EXIT
-        curl -fsSL "$BBRV3_PATCH_URL" -o "$BBRV3_PATCH_FILE"
-
-        cp include/linux/tcp.h              include/linux/tcp.h.orig
-        # include/net/tcp.h  — NOT saved, left patched
-        cp include/uapi/linux/inet_diag.h   include/uapi/linux/inet_diag.h.orig
-        # include/uapi/linux/rtnetlink.h — NOT saved, left patched
-        cp net/ipv4/tcp_input.c             net/ipv4/tcp_input.c.orig
-        cp net/ipv4/tcp_output.c            net/ipv4/tcp_output.c.orig
-        cp net/ipv4/tcp_minisocks.c         net/ipv4/tcp_minisocks.c.orig
-        cp net/ipv4/tcp_rate.c              net/ipv4/tcp_rate.c.orig
-        cp net/ipv4/tcp.c                   net/ipv4/tcp.c.orig
-        cp net/ipv4/tcp_cong.c              net/ipv4/tcp_cong.c.orig
-      
-        patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
-      
-        mv include/linux/tcp.h.orig              include/linux/tcp.h
-        mv include/uapi/linux/inet_diag.h.orig   include/uapi/linux/inet_diag.h
-        mv net/ipv4/tcp_input.c.orig             net/ipv4/tcp_input.c
-        mv net/ipv4/tcp_output.c.orig            net/ipv4/tcp_output.c
-        mv net/ipv4/tcp_minisocks.c.orig         net/ipv4/tcp_minisocks.c
-        mv net/ipv4/tcp_rate.c.orig              net/ipv4/tcp_rate.c
-        mv net/ipv4/tcp.c.orig                   net/ipv4/tcp.c
-        mv net/ipv4/tcp_cong.c.orig              net/ipv4/tcp_cong.c
     
-        echo "✅ BBR applied (full revert diagnostic — headers + .c all original)"
+        trap 'rm -f "$BBRV3_PATCH_FILE"' EXIT
+    
+        curl -fsSL "$BBRV3_PATCH_URL" -o "$BBRV3_PATCH_FILE"
+    
+        # Save originals before applying the BBRv3 patch
+        cp net/ipv4/tcp_input.c net/ipv4/tcp_input.c.orig
+        cp net/ipv4/tcp_output.c net/ipv4/tcp_output.c.orig
+        cp net/ipv4/tcp_minisocks.c net/ipv4/tcp_minisocks.c.orig
+        cp net/ipv4/tcp_rate.c net/ipv4/tcp_rate.c.orig
+        cp net/ipv4/tcp.c net/ipv4/tcp.c.orig
+        cp net/ipv4/tcp_cong.c net/ipv4/tcp_cong.c.orig
+    
+        patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
+    
+        # Revert all selected .c files
+        mv net/ipv4/tcp_input.c.orig net/ipv4/tcp_input.c
+        mv net/ipv4/tcp_output.c.orig net/ipv4/tcp_output.c
+        mv net/ipv4/tcp_minisocks.c.orig net/ipv4/tcp_minisocks.c
+        mv net/ipv4/tcp_rate.c.orig net/ipv4/tcp_rate.c
+        mv net/ipv4/tcp.c.orig net/ipv4/tcp.c
+        mv net/ipv4/tcp_cong.c.orig net/ipv4/tcp_cong.c
+    
+        # Keep Group A headers but undo ONLY the kabi_placeholder in tcp_skb_cb
+        # Keep rate_sample growth, inline functions, defines — just restore u64 fields.
+        python3 <<'PYEOF'
+        import re
+        import sys
+        
+        path = 'include/net/tcp.h'
+        
+        with open(path, 'r') as f:
+            content = f.read()
+        
+        old = re.compile(
+            r'#ifdef __GENKSYMS__\s*\n'
+            r'\s*u64\s+first_tx_mstamp;\s*\n'
+            r'\s*u64\s+delivered_mstamp;\s*\n'
+            r'#else.*?#endif',
+            re.DOTALL
+        )
+        
+        new = '\t\t\tu64\tfirst_tx_mstamp;\n\t\t\tu64\tdelivered_mstamp;'
+        
+        result, count = old.subn(new, content)
+        
+        if count == 0:
+            print("ERROR: kabi_placeholder pattern not found", file=sys.stderr)
+            sys.exit(1)
+        
+        print(f"Reverted {count} kabi_placeholder block(s)")
+        
+        with open(path, 'w') as f:
+            f.write(result)
+        PYEOF
+    
+        echo "✅ BBR applied: headers kept, selected .c files reverted"
         echo "::endgroup::"
+
     
     - name: Add TTL Target Support
       if: ${{ env.OP_TTL == 'true' }}
