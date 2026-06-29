@@ -1804,6 +1804,7 @@ runs:
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
         CONFIG_TCP_CONG_ADVANCED=y
         CONFIG_TCP_CONG_BBR=y
+        CONFIG_TCP_CONG_BBR3=y
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
         CONFIG_NET_SCH_CAKE=y
@@ -1831,10 +1832,6 @@ runs:
         mv net/ipv4/tcp_output.c.orig  net/ipv4/tcp_output.c
         mv net/ipv4/tcp_minisocks.c.orig net/ipv4/tcp_minisocks.c
     
-        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
-        CONFIG_TCP_CONG_BBR3=y
-        
-        EOF
         echo "✅ BBR + BBRv3 applied
         echo "::endgroup::"
 
