@@ -1805,7 +1805,6 @@ runs:
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
         CONFIG_TCP_CONG_ADVANCED=y
         CONFIG_TCP_CONG_BBR=y
-        CONFIG_TCP_CONG_BBR3=y
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
         CONFIG_NET_SCH_CAKE=y
@@ -1840,8 +1839,11 @@ runs:
         mv net/ipv4/tcp_rate.c.orig      net/ipv4/tcp_rate.c
         mv net/ipv4/tcp.c.orig           net/ipv4/tcp.c
         mv net/ipv4/tcp_cong.c.orig      net/ipv4/tcp_cong.c
-    
-        echo "✅ BBR + BBRv3 applied"
+      
+        sed -i '/CONFIG_TCP_CONG_BBR3/d' \
+            "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
+        
+        echo "✅ BBR + BBRv3 applied (BBR3 disabled for boot test)"
         echo "::endgroup::"
 
     - name: Add TTL Target Support
