@@ -2011,10 +2011,6 @@ runs:
         with open(path, 'r') as f:
             s = f.read()
     
-        # Patched form is multi-line:
-        #   #define TCP_CONG_MASK	(TCP_CONG_NON_RESTRICTED | \
-        #   			 TCP_CONG_NEEDS_ECN | \
-        #   			 TCP_CONG_WANTS_CE_EVENTS)
         pat = re.compile(
             r'#define\s+TCP_CONG_MASK\s+\(TCP_CONG_NON_RESTRICTED\s*\|\s*\\\s*\n'
             r'\s*TCP_CONG_NEEDS_ECN\s*\|\s*\\\s*\n'
@@ -2035,7 +2031,78 @@ runs:
             f.write(s2)
         PYEOF3
     
-        echo "✅ BBR applied: rtnetlink.h kept, net/tcp.h cleaned (kabi+rate_sample+TCP_CONG_MASK reverted), .c reverted"
+        echo "Removing CA_EVENT_TLP_RECOVERY enum addition (STG KMI test)..."
+    
+        python3 - <<'PYEOF4'
+        import sys
+    
+        path = 'include/net/tcp.h'
+    
+        with open(path) as f:
+            lines = f.readlines()
+    
+        result = []
+        i = 0
+        removed = 0
+    
+        while i < len(lines):
+            line = lines[i]
+    
+            if line.strip() == '#ifndef __GENKSYMS__':
+                j = i + 1
+                is_enum = False
+                depth = 0
+    
+                while j < len(lines):
+                    s = lines[j].strip()
+    
+                    if 'CA_EVENT_TLP_RECOVERY' in lines[j]:
+                        is_enum = True
+                        break
+    
+                    if s.startswith(('#ifdef', '#ifndef')) or s.startswith('#if '):
+                        depth += 1
+                    elif s == '#endif':
+                        if depth == 0:
+                            break
+                        depth -= 1
+    
+                    j += 1
+    
+                if is_enum:
+                    i += 1
+                    depth = 0
+    
+                    while i < len(lines):
+                        s = lines[i].strip()
+    
+                        if s.startswith(('#ifdef', '#ifndef')) or s.startswith('#if '):
+                            depth += 1
+                        elif s == '#endif':
+                            if depth == 0:
+                                i += 1
+                                removed += 1
+                                break
+                            depth -= 1
+    
+                        i += 1
+    
+                    continue
+    
+            result.append(line)
+            i += 1
+    
+        if removed == 0:
+            print('ERROR: CA_EVENT_TLP_RECOVERY enum block not found', file=sys.stderr)
+            sys.exit(1)
+    
+        print(f'Removed {removed} CA_EVENT_TLP_RECOVERY enum block(s) - enum back to baseline')
+    
+        with open(path, 'w') as f:
+            f.writelines(result)
+        PYEOF4
+    
+        echo "✅ BBR applied: rtnetlink.h kept, net/tcp.h cleaned (kabi+rate_sample+TCP_CONG_MASK+CA_EVENT reverted), .c reverted"
         echo "::endgroup::"
 
     - name: Add TTL Target Support
