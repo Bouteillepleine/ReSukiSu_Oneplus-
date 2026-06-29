@@ -1822,7 +1822,7 @@ runs:
     
         # Save ALL modified files before patching
         cp include/linux/tcp.h              include/linux/tcp.h.orig
-        cp include/net/tcp.h                include/net/tcp.h.orig
+        # include/net/tcp.h NOT saved — leave it patched
         cp include/uapi/linux/inet_diag.h   include/uapi/linux/inet_diag.h.orig
         cp include/uapi/linux/rtnetlink.h   include/uapi/linux/rtnetlink.h.orig
         cp net/ipv4/tcp_input.c             net/ipv4/tcp_input.c.orig
@@ -1834,9 +1834,8 @@ runs:
     
         patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
     
-        # Restore EVERYTHING — only Kconfig/Makefile entries remain (inert with BBR3=n)
+        # Restore everything EXCEPT include/net/tcp.h
         mv include/linux/tcp.h.orig              include/linux/tcp.h
-        mv include/net/tcp.h.orig                include/net/tcp.h
         mv include/uapi/linux/inet_diag.h.orig   include/uapi/linux/inet_diag.h
         mv include/uapi/linux/rtnetlink.h.orig   include/uapi/linux/rtnetlink.h
         mv net/ipv4/tcp_input.c.orig             net/ipv4/tcp_input.c
