@@ -1817,35 +1817,38 @@ runs:
     
         BBRV3_PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.12.patch"
         BBRV3_PATCH_FILE="$(mktemp /tmp/bbrv3_XXXXXX.patch)"
-    
         trap 'rm -f "$BBRV3_PATCH_FILE"' EXIT
-    
         curl -fsSL "$BBRV3_PATCH_URL" -o "$BBRV3_PATCH_FILE"
     
-        # Save originals before patching
-        cp net/ipv4/tcp_input.c      net/ipv4/tcp_input.c.orig
-        cp net/ipv4/tcp_output.c     net/ipv4/tcp_output.c.orig
-        cp net/ipv4/tcp_minisocks.c  net/ipv4/tcp_minisocks.c.orig
-        cp net/ipv4/tcp_rate.c       net/ipv4/tcp_rate.c.orig
-        cp net/ipv4/tcp.c            net/ipv4/tcp.c.orig
-        cp net/ipv4/tcp_cong.c       net/ipv4/tcp_cong.c.orig
-        
+        # Save ALL modified files before patching
+        cp include/linux/tcp.h              include/linux/tcp.h.orig
+        cp include/net/tcp.h                include/net/tcp.h.orig
+        cp include/uapi/linux/inet_diag.h   include/uapi/linux/inet_diag.h.orig
+        cp include/uapi/linux/rtnetlink.h   include/uapi/linux/rtnetlink.h.orig
+        cp net/ipv4/tcp_input.c             net/ipv4/tcp_input.c.orig
+        cp net/ipv4/tcp_output.c            net/ipv4/tcp_output.c.orig
+        cp net/ipv4/tcp_minisocks.c         net/ipv4/tcp_minisocks.c.orig
+        cp net/ipv4/tcp_rate.c              net/ipv4/tcp_rate.c.orig
+        cp net/ipv4/tcp.c                   net/ipv4/tcp.c.orig
+        cp net/ipv4/tcp_cong.c              net/ipv4/tcp_cong.c.orig
+    
         patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
-        
-        # Restore ALL core TCP files — only tcp_bbr3.c + headers + Kconfig/Makefile remain
-        mv net/ipv4/tcp_input.c.orig     net/ipv4/tcp_input.c
-        mv net/ipv4/tcp_output.c.orig    net/ipv4/tcp_output.c
-        mv net/ipv4/tcp_minisocks.c.orig net/ipv4/tcp_minisocks.c
-        mv net/ipv4/tcp_rate.c.orig      net/ipv4/tcp_rate.c
-        mv net/ipv4/tcp.c.orig           net/ipv4/tcp.c
-        mv net/ipv4/tcp_cong.c.orig      net/ipv4/tcp_cong.c
-      
-        sed -i '/CONFIG_TCP_CONG_BBR3/d' \
-            "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
-        
-        echo "✅ BBR + BBRv3 applied (BBR3 disabled for boot test)"
+    
+        # Restore EVERYTHING — only Kconfig/Makefile entries remain (inert with BBR3=n)
+        mv include/linux/tcp.h.orig              include/linux/tcp.h
+        mv include/net/tcp.h.orig                include/net/tcp.h
+        mv include/uapi/linux/inet_diag.h.orig   include/uapi/linux/inet_diag.h
+        mv include/uapi/linux/rtnetlink.h.orig   include/uapi/linux/rtnetlink.h
+        mv net/ipv4/tcp_input.c.orig             net/ipv4/tcp_input.c
+        mv net/ipv4/tcp_output.c.orig            net/ipv4/tcp_output.c
+        mv net/ipv4/tcp_minisocks.c.orig         net/ipv4/tcp_minisocks.c
+        mv net/ipv4/tcp_rate.c.orig              net/ipv4/tcp_rate.c
+        mv net/ipv4/tcp.c.orig                   net/ipv4/tcp.c
+        mv net/ipv4/tcp_cong.c.orig              net/ipv4/tcp_cong.c
+    
+        echo "✅ BBR applied (full revert diagnostic — headers + .c all original)"
         echo "::endgroup::"
-
+    
     - name: Add TTL Target Support
       if: ${{ env.OP_TTL == 'true' }}
       shell: bash
