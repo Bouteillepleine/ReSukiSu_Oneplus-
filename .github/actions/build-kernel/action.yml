@@ -1786,7 +1786,7 @@ runs:
 
         echo "::endgroup::"
 
-    - name: Add Tmpfs Support
+        - name: Add Tmpfs Support
       shell: bash
       run: |
         set -euo pipefail
@@ -1805,7 +1805,7 @@ runs:
         {
           echo "CONFIG_TCP_CONG_ADVANCED=y"
           echo "CONFIG_TCP_CONG_BBR=y"
-          echo "# CONFIG_TCP_CONG_BBR3 is not set"
+          echo "CONFIG_TCP_CONG_BBR3=y"
           echo "CONFIG_NET_SCH_FQ=y"
           echo "CONFIG_NET_SCH_FQ_CODEL=y"
           echo "CONFIG_NET_SCH_CAKE=y"
@@ -1821,28 +1821,14 @@ runs:
         trap 'rm -f "$BBRV3_PATCH_FILE"' EXIT
         curl -fsSL "$BBRV3_PATCH_URL" -o "$BBRV3_PATCH_FILE"
 
-        # Revert these after patching (not needed for STEP 1)
+        # Keep tcp_bbr_info frozen for this KMI-safe STEP2.
         cp include/uapi/linux/inet_diag.h include/uapi/linux/inet_diag.h.orig
-        cp net/ipv4/tcp_input.c net/ipv4/tcp_input.c.orig
-        cp net/ipv4/tcp_output.c net/ipv4/tcp_output.c.orig
-        cp net/ipv4/tcp_minisocks.c net/ipv4/tcp_minisocks.c.orig
-        cp net/ipv4/tcp_rate.c net/ipv4/tcp_rate.c.orig
-        cp net/ipv4/tcp.c net/ipv4/tcp.c.orig
-        cp net/ipv4/tcp_cong.c net/ipv4/tcp_cong.c.orig
 
         patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
 
-        # KEEP patched: include/net/tcp.h, include/linux/tcp.h, include/uapi/linux/rtnetlink.h
-        # Revert: inet_diag.h and all selected .c files
         mv include/uapi/linux/inet_diag.h.orig include/uapi/linux/inet_diag.h
-        mv net/ipv4/tcp_input.c.orig net/ipv4/tcp_input.c
-        mv net/ipv4/tcp_output.c.orig net/ipv4/tcp_output.c
-        mv net/ipv4/tcp_minisocks.c.orig net/ipv4/tcp_minisocks.c
-        mv net/ipv4/tcp_rate.c.orig net/ipv4/tcp_rate.c
-        mv net/ipv4/tcp.c.orig net/ipv4/tcp.c
-        mv net/ipv4/tcp_cong.c.orig net/ipv4/tcp_cong.c
 
-        echo "net/tcp.h: enum->#define fix..."
+        echo "=== net/tcp.h: enum->#define + freeze rate_sample ==="
 
         python3 - <<'PYEOF5'
         import sys
@@ -1902,7 +1888,7 @@ runs:
 
                         if lines[i].strip() == '};':
                             result.append('\n')
-                            result.append('/* KMI-safe: NOT added to enum tcp_ca_event (STG sees through __GENKSYMS__). */\n')
+                            result.append('/* KMI-safe: standalone constant, not in enum tcp_ca_event. */\n')
                             result.append('#define CA_EVENT_TLP_RECOVERY 6\n')
                             i += 1
                             fixed += 1
@@ -1919,13 +1905,11 @@ runs:
             print('ERROR enum fix', file=sys.stderr)
             sys.exit(1)
 
-        print(f'enum->#define ({fixed})')
-
         with open(path, 'w') as f:
             f.writelines(result)
-        PYEOF5
 
-        echo "net/tcp.h: revert rate_sample growth (keep KMI-frozen)..."
+        print(f'enum->#define ({fixed})')
+        PYEOF5
 
         python3 - <<'PYEOF2'
         import sys
@@ -1987,32 +1971,28 @@ runs:
             i += 1
 
         if removed != 1:
-            print('ERROR rate_sample revert', file=sys.stderr)
+            print('ERROR rate_sample', file=sys.stderr)
             sys.exit(1)
-
-        print(f'rate_sample reverted ({removed})')
 
         with open(path, 'w') as f:
             f.writelines(result)
+
+        print(f'rate_sample frozen ({removed})')
         PYEOF2
 
-        echo "linux/tcp.h: relocate BBRv3 fields into KABI-safe storage..."
-        echo "Debug: tcp_sock BBR/KABI snippets before relocation..."
-        grep -nE "fast_ack_mode|tlp_orig_data_app_limited|unused:|bbr_is_ece|bbr_is_acking|ANDROID_KABI_(RESERVE|USE)" include/linux/tcp.h | head -100 || true
+        echo "=== linux/tcp.h: KABI-safe BBRv3 storage ==="
 
         python3 - <<'PYEOFL'
         import sys
         from pathlib import Path
 
         path = Path('include/linux/tcp.h')
-        kabi_path = Path('include/linux/android_kabi.h')
+        kabi = Path('include/linux/android_kabi.h')
 
         s = path.read_text()
-        kabi = kabi_path.read_text() if kabi_path.exists() else ''
-        changed = 0
+        k = kabi.read_text() if kabi.exists() else ''
         T = chr(9)
 
-        # --- A) two per-ACK bits into the patched tcp_sock bitfield (uses the 'unused:2') ---
         if 'bbr_is_ece' not in s:
             old_a = (
                 T + T + T + 'fast_ack_mode:2, /* which fast ack mode ? */\n'
@@ -2028,39 +2008,266 @@ runs:
             )
 
             if old_a not in s:
-                print('ERROR: tcp_sock bitfield block (unused:2) not found', file=sys.stderr)
+                print('ERROR: tcp_sock bitfield not found', file=sys.stderr)
                 sys.exit(1)
 
             s = s.replace(old_a, new_a, 1)
-            changed += 1
             print('linux/tcp.h: bbr bitfields applied')
         else:
             print('linux/tcp.h: bbr bitfields already present')
 
-        # --- B) two u32 into the ANDROID_KABI_RESERVE(1) slot ---
         if 'bbr_tx_in_flight' not in s:
-            if 'ANDROID_KABI_USE2' not in kabi:
-                print('ERROR: ANDROID_KABI_USE2 not defined in include/linux/android_kabi.h', file=sys.stderr)
+            if 'ANDROID_KABI_USE2' not in k:
+                print('ERROR: ANDROID_KABI_USE2 missing', file=sys.stderr)
                 sys.exit(1)
 
             old_b = T + 'ANDROID_KABI_RESERVE(1);'
             new_b = T + 'ANDROID_KABI_USE2(1, u32 bbr_tx_in_flight, u32 bbr_lost);'
 
             if old_b not in s:
-                print('ERROR: ANDROID_KABI_RESERVE(1) not found', file=sys.stderr)
+                print('ERROR: RESERVE(1) not found', file=sys.stderr)
                 sys.exit(1)
 
             s = s.replace(old_b, new_b, 1)
-            changed += 1
-            print('linux/tcp.h: ANDROID_KABI_USE2 applied for bbr_tx_in_flight/bbr_lost')
+            print('linux/tcp.h: ANDROID_KABI_USE2 applied')
         else:
             print('linux/tcp.h: bbr_tx_in_flight/bbr_lost already present')
 
         path.write_text(s)
-        print(f'linux/tcp.h relocation complete; changed blocks={changed}')
+        print('linux/tcp.h: bbr storage applied')
         PYEOFL
 
-        echo "✅ STEP1: KABI storage in place (rate_sample frozen, enum #define); .c reverted; BBR3 off"
+        echo "=== tcp_rate.c: write carriers instead of rs-> ==="
+
+        python3 - <<'PYEOFR'
+        import re
+        import sys
+
+        path = 'net/ipv4/tcp_rate.c'
+        s = open(path).read()
+        n = 0
+
+        s, c = re.subn(
+            r'rs->prior_lost\s*=\s*scb->tx\.lost;',
+            'tp->bbr_lost = scb->tx.lost;',
+            s,
+        )
+        n += c
+
+        s, c = re.subn(
+            r'rs->tx_in_flight\s*=\s*scb->tx\.in_flight;',
+            'tp->bbr_tx_in_flight = scb->tx.in_flight;',
+            s,
+        )
+        n += c
+
+        s, c = re.subn(
+            r'rs->lost\s*=\s*tp->lost\s*-\s*rs->prior_lost;',
+            'tp->bbr_lost = tp->lost - tp->bbr_lost;',
+            s,
+        )
+        n += c
+
+        if n != 3:
+            print(f'ERROR tcp_rate.c edits={n} (expected 3)', file=sys.stderr)
+            sys.exit(1)
+
+        open(path, 'w').write(s)
+        print(f'tcp_rate.c relocated ({n})')
+        PYEOFR
+
+        echo "=== tcp_input.c: write carriers + per-ACK reset ==="
+
+        python3 - <<'PYEOFI'
+        import re
+        import sys
+
+        path = 'net/ipv4/tcp_input.c'
+        s = open(path).read()
+        n = 0
+
+        s, c = re.subn(
+            r'rs->is_acking_tlp_retrans_seq\s*=\s*1;',
+            'tp->bbr_is_acking_tlp_retrans_seq = 1;',
+            s,
+        )
+        n += c
+
+        s, c = re.subn(
+            r'rs\.is_ece\s*=\s*!!\(flag & FLAG_ECE\);',
+            'tp->bbr_is_ece = !!(flag & FLAG_ECE);',
+            s,
+        )
+        n += c
+
+        reset = (
+            '\ttcp_rate_check_app_limited(sk);\n'
+            '\t/* BBRv3 KMI-safe carriers: reset per-ACK event bits. */\n'
+            '\ttp->bbr_is_ece = 0;\n'
+            '\ttp->bbr_is_acking_tlp_retrans_seq = 0;\n'
+        )
+
+        s, c = re.subn(
+            r'\ttcp_rate_check_app_limited\(sk\);\n',
+            reset,
+            s,
+            count=1,
+        )
+        n += c
+
+        if n != 3:
+            print(f'ERROR tcp_input.c edits={n} (expected 3)', file=sys.stderr)
+            sys.exit(1)
+
+        open(path, 'w').write(s)
+        print(f'tcp_input.c relocated ({n})')
+        PYEOFI
+
+        echo "=== tcp_bbr3.c: read carriers + freeze diag ==="
+
+        python3 - <<'PYEOFB'
+        import re
+        import sys
+
+        path = 'net/ipv4/tcp_bbr3.c'
+        s = open(path).read()
+
+        # Replace KMI-breaking rate_sample extension reads with tcp_sock carriers.
+        replacements = [
+            ('rs->tx_in_flight', 'tcp_sk(sk)->bbr_tx_in_flight'),
+            ('rs->is_acking_tlp_retrans_seq', 'tcp_sk(sk)->bbr_is_acking_tlp_retrans_seq'),
+            ('rs->is_ece', 'tcp_sk(sk)->bbr_is_ece'),
+        ]
+
+        count = 0
+
+        for old, new in replacements:
+            c = s.count(old)
+            s = s.replace(old, new)
+            count += c
+
+        # Keep signed semantics for BBRv3 loss delta users.
+        s, c = re.subn(
+            r'rs->lost\s*>',
+            r'(s32)tcp_sk(sk)->bbr_lost >',
+            s,
+        )
+        count += c
+
+        s, c = re.subn(
+            r'rs->lost\s*-',
+            r'(s32)tcp_sk(sk)->bbr_lost -',
+            s,
+        )
+        count += c
+
+        s, c = re.subn(
+            r'rs->lost\s*,',
+            r'(s32)tcp_sk(sk)->bbr_lost,',
+            s,
+        )
+        count += c
+
+        print(f'tcp_bbr3.c: carrier read replacements={count}')
+
+        # Freeze inet_diag output to baseline tcp_bbr_info fields only.
+        # inet_diag.h was reverted, so remove writes to extended tcp_bbr_info fields.
+        s = re.sub(
+            r'\n\s*u64 bw, bw_hi, bw_lo;\n',
+            '\n\tu64 bw;\n',
+            s,
+            count=1,
+        )
+
+        s = re.sub(
+            r'\n\s*bw_hi = bbr_bw_bytes_per_sec\(sk, bbr_max_bw\(sk\)\);\n'
+            r'\s*bw_lo = bbr->bw_lo == ~0U \?\n'
+            r'\s*~0ULL : bbr_bw_bytes_per_sec\(sk, bbr->bw_lo\);\n',
+            '\n',
+            s,
+            count=1,
+        )
+
+        extended_fields = [
+            'bbr_bw_hi_lsb',
+            'bbr_bw_hi_msb',
+            'bbr_bw_lo_lsb',
+            'bbr_bw_lo_msb',
+            'bbr_mode',
+            'bbr_phase',
+            'bbr_version',
+            'bbr_inflight_lo',
+            'bbr_inflight_hi',
+            'bbr_extra_acked',
+        ]
+
+        removed = 0
+
+        for field in extended_fields:
+            s, c = re.subn(
+                r'\n\s*bbr_info->' + re.escape(field) + r'\s*=.*?;',
+                '',
+                s,
+            )
+            removed += c
+
+        print(f'tcp_bbr3.c: removed extended tcp_bbr_info writes={removed}')
+
+        # Remove bbr_get_phase() if dropping bbr_phase made it unused.
+        if 'bbr_get_phase(' in s:
+            uses = len(re.findall(r'\bbbr_get_phase\s*\(', s))
+
+            if uses == 1:
+                s, c = re.subn(
+                    r'\nstatic enum tcp_bbr_phase bbr_get_phase\(struct bbr3 \*bbr\)\n\{.*?\n\}\n',
+                    '\n',
+                    s,
+                    count=1,
+                    flags=re.DOTALL,
+                )
+
+                if c:
+                    print('tcp_bbr3.c: removed unused bbr_get_phase()')
+            else:
+                print(f'tcp_bbr3.c: bbr_get_phase still has uses={uses}; kept')
+
+        leftover = re.findall(
+            r'rs->(tx_in_flight|is_ece|is_acking_tlp_retrans_seq|prior_lost)|rs->lost\s*[>,-]',
+            s,
+        )
+
+        if leftover:
+            print(f'ERROR: leftover rs-> refs: {leftover}', file=sys.stderr)
+            sys.exit(1)
+
+        diag_leftover = [f for f in extended_fields if f'bbr_info->{f}' in s]
+
+        if diag_leftover:
+            print(f'ERROR: leftover extended tcp_bbr_info writes: {diag_leftover}', file=sys.stderr)
+            sys.exit(1)
+
+        open(path, 'w').write(s)
+        print('tcp_bbr3.c relocated + diag frozen')
+        PYEOFB
+
+        echo "=== Final BBRv3 KMI-safe sanity checks ==="
+
+        echo "Check: tcp_sock BBR carriers..."
+        grep -nE "bbr_tx_in_flight|bbr_lost|bbr_is_ece|bbr_is_acking_tlp_retrans_seq" include/linux/tcp.h net/ipv4/tcp_rate.c net/ipv4/tcp_input.c net/ipv4/tcp_bbr3.c || true
+
+        echo "Check: no stale BBRv3 rate_sample extension accesses..."
+        if grep -RInE "rs->(tx_in_flight|prior_lost|is_ece|is_acking_tlp_retrans_seq)|rs\.(tx_in_flight|lost|prior_lost|is_ece|is_acking_tlp_retrans_seq)|rs->lost[[:space:]]*[>,-]" net/ipv4 include/net include/linux; then
+          echo "ERROR: stale BBRv3 rate_sample extension access remains"
+          exit 1
+        fi
+
+        echo "Check: no extended tcp_bbr_info writes while inet_diag.h is frozen..."
+        if grep -nE "bbr_info->(bbr_bw_hi_lsb|bbr_bw_hi_msb|bbr_bw_lo_lsb|bbr_bw_lo_msb|bbr_mode|bbr_phase|bbr_version|bbr_inflight_lo|bbr_inflight_hi|bbr_extra_acked)" net/ipv4/tcp_bbr3.c; then
+          echo "ERROR: extended tcp_bbr_info write remains"
+          exit 1
+        fi
+
+        echo "✅ STEP2: full BBRv3 wired to KMI carriers; rate_sample/tcp_bbr_info frozen; BBR3=y"
         echo "::endgroup::"
 
     - name: Add TTL Target Support
