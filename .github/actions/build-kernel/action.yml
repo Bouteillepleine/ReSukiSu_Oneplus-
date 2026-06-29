@@ -1816,7 +1816,36 @@ runs:
         cd "$COMMON_KERNEL_FOLDER"
 
         PATCH_BASE_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/common/bbrv3"
-        PATCH_NAME="0001-net-tcp-backport-BBRv3-to-${ANDROID_VER}-${KERNEL_VER}.patch"
+
+        case "${ANDROID_VER}-${KERNEL_VER}" in
+          android12-5.10)
+            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android12-5.10.patch"
+            ;;
+          android13-5.15)
+            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android13-5.15.patch"
+            ;;
+          android14-6.1)
+            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android14-6.1.patch"
+            ;;
+          android15-6.6)
+            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android15-6.6.patch"
+            ;;
+          android15-6.12|android16-6.12)
+            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android15-6.12.patch"
+            ;;
+          *)
+            echo "ERROR: no known BBRv3 patch mapping for ${ANDROID_VER}-${KERNEL_VER}"
+            echo "Available mappings:"
+            echo "  android12-5.10"
+            echo "  android13-5.15"
+            echo "  android14-6.1"
+            echo "  android15-6.6"
+            echo "  android15-6.12"
+            echo "  android16-6.12 -> android15-6.12"
+            exit 1
+            ;;
+        esac
+
         PATCH_URL="$PATCH_BASE_URL/$PATCH_NAME"
 
         echo "Using BBRv3 patch URL: $PATCH_URL"
