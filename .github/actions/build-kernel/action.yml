@@ -1825,18 +1825,19 @@ runs:
         fi
 
         if [ "$(wc -c < "$BBRV3_PATCH_FILE")" -lt 1024 ]; then
-          echo "::error::BBRv3 patch download looks too small — aborting"
+          echo "::error::BBRv3 patch download too small"
           exit 1
         fi
 
         patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
 
+        # Compile BBRv3 in but keep cubic as default for now
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
-        CONFIG_TCP_CONG_BBR3=y        
+        CONFIG_TCP_CONG_BBR3=y
         EOF
 
         echo "✅ BBR + BBRv3 applied"
-        echo "::endgroup::"
+        echo "::endgroup::"        
         
     - name: Add TTL Target Support
       if: ${{ env.OP_TTL == 'true' }}
