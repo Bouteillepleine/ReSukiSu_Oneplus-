@@ -495,20 +495,22 @@ jobs:
             }'
           )
 
+          merged_matrix=$(echo "$merged_matrix" | jq \
+            --argjson hashes "$susfs_hashes_json" \
+            '[.[] | . + {susfs_resolved_hash: ($hashes["\(.android_version)-\(.kernel_version)"] // "unknown")}]'
+          )
+
           merged_matrix=$(echo "$merged_matrix" | jq '
             sort_by(
               (.os_version | gsub("OOS"; "") | tonumber? // 0) * -1,
               .model
             )
           ')
-          
-          matrix_envelope=$(jq -n \
-            --argjson items "$merged_matrix" \
-            --arg rid "${{ github.run_id }}" \
-            '{_run_id: $rid, items: $items}')
-          
-          echo "$matrix_envelope" | jq '.' > matrix.json          
-          echo "matrix=$(echo "$matrix_envelope" | jq -c '{include: .items}')" >> "$GITHUB_OUTPUT"
+
+          echo "$merged_matrix" | jq '.' > matrix.json
+
+          wrapped=$(jq -n --argjson items "$merged_matrix" '{ include: $items }')
+          echo "matrix=$(jq -c . <<< "$wrapped")" >> "$GITHUB_OUTPUT"
 
           echo "::endgroup::"
 
@@ -639,7 +641,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           jq -r '
-            .items | to_entries[]
+            to_entries[]
             | "| \(.key + 1) | `\(.value.model)` | `\(.value.os_version)` | `\(.value.android_version)-\(.value.kernel_version)` | `\(.value.soc)` | `\(.value.susfs)` | `\(.value.lto)` | `\(.value.branch)` |"
           ' matrix.json >> "$GITHUB_STEP_SUMMARY"
 
@@ -1065,48 +1067,6 @@ jobs:
           merge-multiple: true
           skip-decompress: true
 
-      - name: ✅ Validate matrix artifact run provenance
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          MATRIX_FILE="./downloaded-artifacts/matrix.json"
-
-          if [ ! -f "$MATRIX_FILE" ]; then
-            echo "::error::matrix.json not found in downloaded artifacts"
-            exit 1
-          fi
-
-          # Guard: must be an envelope object, not the old bare array format
-          MATRIX_TYPE="$(jq -r 'type' "$MATRIX_FILE")"
-          if [ "$MATRIX_TYPE" != "object" ]; then
-            echo "::error::matrix.json is a bare $MATRIX_TYPE, not an envelope object."
-            echo "  This artifact was produced by a version of this workflow that"
-            echo "  predates run-provenance tracking. Re-run the full workflow"
-            echo "  (set-op-model → build → trigger-release) to generate a fresh artifact."
-            exit 1
-          fi
-
-          ARTIFACT_RUN_ID="$(jq -r '._run_id // empty' "$MATRIX_FILE")"
-
-          if [ -z "$ARTIFACT_RUN_ID" ]; then
-            echo "::error::matrix.json is missing the _run_id field."
-            echo "  Re-run the full workflow to generate a matrix with provenance."
-            exit 1
-          fi
-
-          CURRENT_RUN_ID="${{ github.run_id }}"
-
-          if [ "$ARTIFACT_RUN_ID" != "$CURRENT_RUN_ID" ]; then
-            echo "::error::Stale matrix artifact detected."
-            echo "  matrix.json was produced by run $ARTIFACT_RUN_ID"
-            echo "  but this is run $CURRENT_RUN_ID."
-            echo "  Delete the old 'build-matrix' artifact and re-run."
-            exit 1
-          fi
-
-          echo "✅ matrix.json provenance verified (run $CURRENT_RUN_ID)"
-
       - name: 🔐 Generate Checksums
         shell: bash
         run: |
@@ -1220,7 +1180,7 @@ jobs:
 
           declare -A device_info
 
-          JSON_BUILD_DATA="$(jq -c '.items' ./downloaded-artifacts/matrix.json)"
+          JSON_BUILD_DATA="$(jq -c '.' ./downloaded-artifacts/matrix.json)"
 
           for file in $(find downloaded-artifacts -maxdepth 1 -name "*.zip" -type f | sort); do
             if [ -f "$file" ]; then
@@ -1476,7 +1436,7 @@ jobs:
 
           ---
 
-          **⚡ Built with passion by the community**
+          **⚡ Built with ❤️ by the community**
           EOF
 
           echo "--- Final Release Notes ---"
