@@ -1825,33 +1825,182 @@ runs:
     
         curl -fsSL "$BBRV3_PATCH_URL" -o "$BBRV3_PATCH_FILE"
     
-        echo "Saving original TCP source files..."
+        echo "Saving original TCP source files and headers..."
     
-        # Save originals before patching
-        cp include/linux/tcp.h              include/linux/tcp.h.orig
-        cp include/net/tcp.h                include/net/tcp.h.orig
-        cp include/uapi/linux/inet_diag.h   include/uapi/linux/inet_diag.h.orig
-        cp net/ipv4/tcp_input.c             net/ipv4/tcp_input.c.orig
-        cp net/ipv4/tcp_output.c            net/ipv4/tcp_output.c.orig
-        cp net/ipv4/tcp_minisocks.c         net/ipv4/tcp_minisocks.c.orig
-        cp net/ipv4/tcp_rate.c              net/ipv4/tcp_rate.c.orig
-        cp net/ipv4/tcp.c                   net/ipv4/tcp.c.orig
-        cp net/ipv4/tcp_cong.c              net/ipv4/tcp_cong.c.orig
-      
+        cp include/linux/tcp.h include/linux/tcp.h.orig
+        cp include/net/tcp.h include/net/tcp.h.orig
+        cp include/uapi/linux/inet_diag.h include/uapi/linux/inet_diag.h.orig
+        cp include/uapi/linux/rtnetlink.h include/uapi/linux/rtnetlink.h.orig
+    
+        cp net/ipv4/tcp_input.c net/ipv4/tcp_input.c.orig
+        cp net/ipv4/tcp_output.c net/ipv4/tcp_output.c.orig
+        cp net/ipv4/tcp_minisocks.c net/ipv4/tcp_minisocks.c.orig
+        cp net/ipv4/tcp_rate.c net/ipv4/tcp_rate.c.orig
+        cp net/ipv4/tcp.c net/ipv4/tcp.c.orig
+        cp net/ipv4/tcp_cong.c net/ipv4/tcp_cong.c.orig
+    
         patch -p1 --forward -F 3 < "$BBRV3_PATCH_FILE"
-
-        # Restore EVERYTHING except rtnetlink.h
-        mv include/linux/tcp.h.orig              include/linux/tcp.h
-        mv include/net/tcp.h.orig                include/net/tcp.h
-        mv include/uapi/linux/inet_diag.h.orig   include/uapi/linux/inet_diag.h
-        mv net/ipv4/tcp_input.c.orig             net/ipv4/tcp_input.c
-        mv net/ipv4/tcp_output.c.orig            net/ipv4/tcp_output.c
-        mv net/ipv4/tcp_minisocks.c.orig         net/ipv4/tcp_minisocks.c
-        mv net/ipv4/tcp_rate.c.orig              net/ipv4/tcp_rate.c
-        mv net/ipv4/tcp.c.orig                   net/ipv4/tcp.c
-        mv net/ipv4/tcp_cong.c.orig              net/ipv4/tcp_cong.c
-
-        echo "✅ BBR applied: only rtnetlink.h patched (RTAX_FEATURE_MASK test)"
+    
+        echo "Restoring selected files..."
+    
+        # Restore files we do not want from the BBRv3 patch for this test.
+        # Keep include/net/tcp.h patched because the Python blocks below clean it selectively.
+        # Keep include/uapi/linux/rtnetlink.h patched for RTAX_FEATURE_MASK test.
+        mv include/linux/tcp.h.orig include/linux/tcp.h
+        mv include/uapi/linux/inet_diag.h.orig include/uapi/linux/inet_diag.h
+    
+        mv net/ipv4/tcp_input.c.orig net/ipv4/tcp_input.c
+        mv net/ipv4/tcp_output.c.orig net/ipv4/tcp_output.c
+        mv net/ipv4/tcp_minisocks.c.orig net/ipv4/tcp_minisocks.c
+        mv net/ipv4/tcp_rate.c.orig net/ipv4/tcp_rate.c
+        mv net/ipv4/tcp.c.orig net/ipv4/tcp.c
+        mv net/ipv4/tcp_cong.c.orig net/ipv4/tcp_cong.c
+    
+        # Remove unused original backups to avoid confusion.
+        rm -f include/net/tcp.h.orig
+        rm -f include/uapi/linux/rtnetlink.h.orig
+    
+        echo "Reverting tcp_skb_cb KABI placeholder block..."
+    
+        python3 - <<'PYEOF'
+        import sys
+    
+        path = 'include/net/tcp.h'
+    
+        with open(path, 'r') as f:
+            lines = f.readlines()
+    
+        result = []
+        i = 0
+        replaced = 0
+    
+        while i < len(lines):
+            line = lines[i]
+    
+            if line.strip() == '#ifdef __GENKSYMS__':
+                j = i + 1
+                is_kabi = False
+    
+                while j < len(lines) and lines[j].strip() not in ('#else', '#endif'):
+                    if 'u64' in lines[j] and 'first_tx_mstamp' in lines[j]:
+                        is_kabi = True
+                        break
+                    j += 1
+    
+                if is_kabi:
+                    i += 1
+    
+                    while i < len(lines) and lines[i].strip() != '#else':
+                        result.append(lines[i])
+                        i += 1
+    
+                    if i < len(lines) and lines[i].strip() == '#else':
+                        i += 1
+    
+                    depth = 0
+    
+                    while i < len(lines):
+                        s = lines[i].strip()
+    
+                        if s.startswith(('#ifdef', '#ifndef')) or s.startswith('#if '):
+                            depth += 1
+                        elif s == '#endif':
+                            if depth == 0:
+                                i += 1
+                                replaced += 1
+                                break
+                            depth -= 1
+    
+                        i += 1
+    
+                    continue
+    
+            result.append(line)
+            i += 1
+    
+        if replaced == 0:
+            print('ERROR: kabi_placeholder block not found', file=sys.stderr)
+            sys.exit(1)
+    
+        print(f'Reverted {replaced} kabi_placeholder block(s) - u64 fields restored')
+    
+        with open(path, 'w') as f:
+            f.writelines(result)
+        PYEOF
+    
+        echo "Removing rate_sample extension block..."
+    
+        python3 - <<'PYEOF2'
+        import sys
+    
+        path = 'include/net/tcp.h'
+    
+        with open(path, 'r') as f:
+            lines = f.readlines()
+    
+        result = []
+        i = 0
+        removed = 0
+    
+        while i < len(lines):
+            line = lines[i]
+    
+            if line.strip() == '#ifndef __GENKSYMS__':
+                j = i + 1
+                is_rs_block = False
+                depth = 0
+    
+                while j < len(lines):
+                    s = lines[j].strip()
+    
+                    if 'is_acking_tlp_retrans_seq' in lines[j]:
+                        is_rs_block = True
+                        break
+    
+                    if s.startswith(('#ifdef', '#ifndef')) or s.startswith('#if '):
+                        depth += 1
+                    elif s == '#endif':
+                        if depth == 0:
+                            break
+                        depth -= 1
+    
+                    j += 1
+    
+                if is_rs_block:
+                    i += 1
+    
+                    depth = 0
+    
+                    while i < len(lines):
+                        s = lines[i].strip()
+    
+                        if s.startswith(('#ifdef', '#ifndef')) or s.startswith('#if '):
+                            depth += 1
+                        elif s == '#endif':
+                            if depth == 0:
+                                i += 1
+                                removed += 1
+                                break
+                            depth -= 1
+    
+                        i += 1
+    
+                    continue
+    
+            result.append(line)
+            i += 1
+    
+        if removed == 0:
+            print('ERROR: rate_sample extension block not found', file=sys.stderr)
+            sys.exit(1)
+    
+        print(f'Removed {removed} rate_sample extension block(s) - struct stays at 72 bytes')
+    
+        with open(path, 'w') as f:
+            f.writelines(result)
+        PYEOF2
+    
+        echo "✅ BBR applied: rtnetlink.h kept patched, include/net/tcp.h selectively cleaned, selected .c files reverted"
         echo "::endgroup::"
 
     - name: Add TTL Target Support
