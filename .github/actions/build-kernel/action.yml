@@ -1827,7 +1827,7 @@ runs:
           android15-6.6)
             PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android15-6.6.patch" ;;
           android15-6.12|android16-6.12)
-            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android15-6.12-KMI-safe.patch" ;;
+            PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android16-6.12-hardened.patch" ;;
           *)
             echo "ERROR: no known BBRv3 patch mapping for ${ANDROID_VER}-${KERNEL_VER}"
             exit 1 ;;
