@@ -783,7 +783,7 @@ runs:
         sanitize_ccache_env
         ccache -z || true
 
-        echo "::endgroup::"
+        echo "::endgroup::"    
 
     - name: Fetch SusFS and Other Dependencies
       shell: bash
@@ -1001,6 +1001,23 @@ runs:
         rm -f common/android/abi_gki_protected_exports_* || true
         sed -i 's/protected_modules = \[.*\]/protected_modules = []/' common/modules.bzl || true
         echo "::endgroup::"
+
+    - name: Blacklist OnePlus SecurityGuard module (no anti-tamper alerts)
+      shell: bash
+      run: |
+        set -euo pipefail
+        MAIN_C="$COMMON_KERNEL_FOLDER/kernel/module/main.c"
+        [ -f "$MAIN_C" ] || { echo "ℹ️  $MAIN_C missing — skipping"; exit 0; }
+        if grep -q '"oplus_secure_guard_new"' "$MAIN_C"; then
+          echo "✅ Already blacklisted"; exit 0
+        fi
+        if grep -q 'custom_module_blacklist\[\] = {' "$MAIN_C"; then
+          sed -i 's|\(static char \*custom_module_blacklist\[\] = {\)|\1\n\t"oplus_secure_guard_new",|' "$MAIN_C"
+          echo "✅ Blacklisted oplus_secure_guard_new:"
+          grep -n 'oplus_secure_guard_new' "$MAIN_C"
+        else
+          echo "ℹ️  No custom_module_blacklist in this tree — nothing to do"
+        fi
     
     - name: Add ReSukiSU
       shell: bash
