@@ -1001,34 +1001,7 @@ runs:
         rm -f common/android/abi_gki_protected_exports_* || true
         sed -i 's/protected_modules = \[.*\]/protected_modules = []/' common/modules.bzl || true
         echo "::endgroup::"
-
-    - name: Blacklist OnePlus SecurityGuard module
-      shell: bash
-      run: |
-        set -euo pipefail
-        MAIN_C="$COMMON_KERNEL_FOLDER/kernel/module/main.c"
-        [ -f "$MAIN_C" ] || { echo "ℹ️  $MAIN_C missing — skipping"; exit 0; }
-        TARGET="oplus_secure_guard_new"
-
-        if grep -q "\"$TARGET\"" "$MAIN_C"; then
-          echo "✅ Already blocked"; exit 0
-        fi
-
-        if grep -q 'custom_module_blacklist\[\] = {' "$MAIN_C"; then
-          # sm8750-style hardcoded array
-          sed -i "s|\(static char \*custom_module_blacklist\[\] = {\)|\1\n\t\"$TARGET\",|" "$MAIN_C"
-          echo "✅ Added to custom_module_blacklist[]"
-        elif grep -q 'static bool blacklisted(const char \*module_name)' "$MAIN_C"; then
-          # stock (OP15/sm8850): hard check before the module_blacklist scan
-          sed -i "s|\(\tif (!module_blacklist)\)|\t/* Always block OnePlus SecurityGuard anti-tamper */\n\tif (!strcmp(module_name, \"$TARGET\"))\n\t\treturn true;\n\n\1|" "$MAIN_C"
-          echo "✅ Injected hard check into blacklisted()"
-        else
-          echo "::warning::No known blacklist hook found — skipped"; exit 0
-        fi
-
-        echo "--- verify ---"
-        grep -n "$TARGET" "$MAIN_C" || { echo "::error::insert failed"; exit 1; }
-
+    
     - name: Add ReSukiSU
       shell: bash
       if: ${{ inputs.ksu_type == 'RSKSU' }}
