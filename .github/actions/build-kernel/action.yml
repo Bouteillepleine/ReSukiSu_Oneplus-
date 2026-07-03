@@ -1007,10 +1007,8 @@ runs:
       run: |
         set -euo pipefail
         DEFCONFIG="$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
-        BLACKLIST="oplus_secure_guard_new,oplus_secure_guard"
-
-        # Preserve any existing CONFIG_CMDLINE, drop a previously-added
-        # module_blacklist= of ours, then append the SecurityGuard entry.
+        BLACKLIST="oplus_secure_guard_new,oplus_secure_guard,oplus_network_tuning"
+        
         cur="$(sed -n 's/^CONFIG_CMDLINE="\(.*\)"$/\1/p' "$DEFCONFIG" | tail -1)"
         cur="$(printf '%s' "$cur" | sed -E 's/(^| )module_blacklist=[^ ]*//g' | xargs || true)"
         new="${cur:+$cur }module_blacklist=$BLACKLIST"
