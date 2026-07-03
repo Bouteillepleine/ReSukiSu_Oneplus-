@@ -1057,8 +1057,6 @@ runs:
           grep -q "\"$T\"" "$LOADER" || { echo "::error::target $T missing after patch"; exit 1; }
         done
         echo "✅ SecurityGuard blocked in $LOADER"
-        echo "✅ module_blacklist set via CONFIG_CMDLINE:"
-        grep -nE '^CONFIG_CMDLINE' "$DEFCONFIG"
     
     - name: Add ReSukiSU
       shell: bash
