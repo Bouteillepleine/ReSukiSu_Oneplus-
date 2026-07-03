@@ -1006,21 +1006,57 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        DEFCONFIG="$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
-        BLACKLIST="oplus_secure_guard_new,oplus_secure_guard,oplus_network_tuning"
-        
-        cur="$(sed -n 's/^CONFIG_CMDLINE="\(.*\)"$/\1/p' "$DEFCONFIG" | tail -1)"
-        cur="$(printf '%s' "$cur" | sed -E 's/(^| )module_blacklist=[^ ]*//g' | xargs || true)"
-        new="${cur:+$cur }module_blacklist=$BLACKLIST"
+        MARK="Always block OnePlus SecurityGuard anti-tamper"
+        TARGETS=(oplus_secure_guard_new oplus_secure_guard)
+        ANCHOR='bool blacklisted(const char'
 
-        # Reset the three cmdline symbols to a known-good state.
-        sed -i -E '/^CONFIG_CMDLINE=/d; /^(# )?CONFIG_CMDLINE_EXTEND( is not set|=.*)/d; /^(# )?CONFIG_CMDLINE_FORCE( is not set|=.*)/d' "$DEFCONFIG"
-        {
-          echo "CONFIG_CMDLINE=\"$new\""
-          echo "CONFIG_CMDLINE_EXTEND=y"
-          echo "CONFIG_CMDLINE_FORCE=n"
-        } >> "$DEFCONFIG"
+        # --- locate the module-loader source across every model layout ---------
+        LOADER=""
+        declare -a CAND=(
+          "$COMMON_KERNEL_FOLDER/kernel/module/main.c"
+          "$COMMON_KERNEL_FOLDER/kernel/module.c"
+        )
+        for d in "${CONFIG_FOLDER:-}"/kernel-* "${KERNEL_PLATFORM_FOLDER:-}"/../kernel-*; do
+          [ -d "$d" ] && CAND+=("$d/kernel/module/main.c" "$d/kernel/module.c")
+        done
+        for f in "${CAND[@]}"; do
+          [ -f "$f" ] && grep -qF "$ANCHOR" "$f" 2>/dev/null && { LOADER="$f"; break; }
+        done
+        # fallback: scoped content search (tree is freshly synced, no out/ yet)
+        if [ -z "$LOADER" ]; then
+          LOADER="$(grep -rlF "$ANCHOR" \
+                      "${COMMON_KERNEL_FOLDER%/*}" "${CONFIG_FOLDER:-$COMMON_KERNEL_FOLDER}" \
+                      --include=main.c --include=module.c 2>/dev/null | head -n1 || true)"
+        fi
+        [ -n "$LOADER" ] || { echo "::error::module loader (blacklisted()) not found — layout changed"; exit 1; }
+        echo "Module loader: $LOADER"
 
+        # --- idempotent --------------------------------------------------------
+        if grep -qF "$MARK" "$LOADER"; then echo "✅ Already blocked"; exit 0; fi
+
+        # --- patch -------------------------------------------------------------
+        if grep -q 'custom_module_blacklist\[\] = {' "$LOADER"; then
+          for T in "${TARGETS[@]}"; do
+            grep -q "\"$T\"" "$LOADER" || \
+              sed -i "s|\(static char \*custom_module_blacklist\[\] = {\)|\1\n\t\"$T\", /* $MARK */|" "$LOADER"
+          done
+          echo "✅ Added targets to custom_module_blacklist[]"
+        else
+          INJ="\t/* $MARK */\n"
+          for T in "${TARGETS[@]}"; do
+            INJ="${INJ}\tif (!strcmp(module_name, \"$T\"))\n\t\treturn true;\n"
+          done
+          INJ="${INJ}\n"
+          sed -i "0,/\(\tif (!module_blacklist)\)/s||${INJ}\1|" "$LOADER"
+          echo "✅ Injected hard check into blacklisted()"
+        fi
+
+        # --- verify ------------------------------------------------------------
+        grep -qF "$MARK" "$LOADER" || { echo "::error::marker missing after patch"; exit 1; }
+        for T in "${TARGETS[@]}"; do
+          grep -q "\"$T\"" "$LOADER" || { echo "::error::target $T missing after patch"; exit 1; }
+        done
+        echo "✅ SecurityGuard blocked in $LOADER"
         echo "✅ module_blacklist set via CONFIG_CMDLINE:"
         grep -nE '^CONFIG_CMDLINE' "$DEFCONFIG"
     
