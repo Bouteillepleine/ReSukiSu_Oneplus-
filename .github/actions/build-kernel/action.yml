@@ -1634,6 +1634,9 @@ runs:
         if [ "$OP_HMBIRD" = "true" ]; then
           HMBIRD_MODEL="$(echo "$OP_MODEL" | sed 's/-[0-9]\+\.[0-9]\+\.[0-9]\+$//')"
 
+          # Fengchi patches are named by Android major version (A15/A16), not the OOS version.
+          ANDROID_SHORT="A${ANDROID_VER#android}"
+
           case "$OP_MODEL" in
             OP-ACE-5-ULTRA-6.6.50|OP-ACE-5-PRO-6.6.30|OP13-6.6.30|OP13-CPH-6.6.56)
               FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/deprecated" ;;
@@ -1641,8 +1644,17 @@ runs:
               FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird" ;;
           esac
 
-          dos2unix "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${OP_OS_VERSION}.patch"
-          patch -p1 -F 3 < "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${OP_OS_VERSION}.patch"
+          FENGCHI_PATCH="$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${ANDROID_SHORT}.patch"
+
+          if [ ! -f "$FENGCHI_PATCH" ]; then
+            echo "::error::Fengchi patch not found: $FENGCHI_PATCH"
+            echo "Available fengchi patches:"
+            find "$KERNEL_PATCHES_FOLDER/oneplus/hmbird" -name 'fengchi_*' -print || true
+            exit 1
+          fi
+
+          dos2unix "$FENGCHI_PATCH"
+          patch -p1 -F 3 < "$FENGCHI_PATCH"
 
           dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
           patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
