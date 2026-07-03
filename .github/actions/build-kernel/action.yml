@@ -1637,32 +1637,45 @@ runs:
           # Fengchi patches are named by Android major version (A15/A16), not the OOS version.
           ANDROID_SHORT="A${ANDROID_VER#android}"
 
+          HMBIRD_BASE="$KERNEL_PATCHES_FOLDER/oneplus/hmbird"
+          PATCH_REL="fengchi_${HMBIRD_MODEL}_${ANDROID_SHORT}.patch"
+
+          # These exact firmware builds must use the deprecated patch even when a
+          # same-named patch also exists in main, so search deprecated first.
+          # Everything else prefers main and falls back to deprecated.
           case "$OP_MODEL" in
             OP-ACE-5-ULTRA-6.6.50|OP-ACE-5-PRO-6.6.30|OP13-6.6.30|OP13-CPH-6.6.56)
-              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/deprecated" ;;
+              SEARCH_DIRS=("$HMBIRD_BASE/deprecated" "$HMBIRD_BASE") ;;
             *)
-              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird" ;;
+              SEARCH_DIRS=("$HMBIRD_BASE" "$HMBIRD_BASE/deprecated") ;;
           esac
 
-          FENGCHI_PATCH="$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${ANDROID_SHORT}.patch"
+          FENGCHI_PATCH=""
+          for dir in "${SEARCH_DIRS[@]}"; do
+            if [ -f "$dir/$PATCH_REL" ]; then
+              FENGCHI_PATCH="$dir/$PATCH_REL"
+              break
+            fi
+          done
 
-          if [ ! -f "$FENGCHI_PATCH" ]; then
-            echo "::error::Fengchi patch not found: $FENGCHI_PATCH"
+          if [ -z "$FENGCHI_PATCH" ]; then
+            echo "::error::Fengchi patch not found: $PATCH_REL (searched ${SEARCH_DIRS[*]})"
             echo "Available fengchi patches:"
-            find "$KERNEL_PATCHES_FOLDER/oneplus/hmbird" -name 'fengchi_*' -print || true
+            find "$HMBIRD_BASE" -name 'fengchi_*' -print || true
             exit 1
           fi
 
+          echo "Using fengchi patch: $FENGCHI_PATCH"
           dos2unix "$FENGCHI_PATCH"
           patch -p1 -F 3 < "$FENGCHI_PATCH"
 
-          dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
-          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
+          dos2unix "$HMBIRD_BASE/overwriter.patch"
+          patch -p1 -F 3 < "$HMBIRD_BASE/overwriter.patch"
 
           chmod +x ./drivers/of/overwriter/overwrite_configs/convert_configs.sh || true
 
-          dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
-          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
+          dos2unix "$HMBIRD_BASE/hmbird_config.patch"
+          patch -p1 -F 3 < "$HMBIRD_BASE/hmbird_config.patch"
         else
           echo "Hmbird not enabled, skipping fengchi patch"
         fi
