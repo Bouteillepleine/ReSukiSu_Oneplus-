@@ -1001,6 +1001,30 @@ runs:
         rm -f common/android/abi_gki_protected_exports_* || true
         sed -i 's/protected_modules = \[.*\]/protected_modules = []/' common/modules.bzl || true
         echo "::endgroup::"
+
+    - name: Blacklist OnePlus SecurityGuard module
+      shell: bash
+      run: |
+        set -euo pipefail
+        DEFCONFIG="$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
+        BLACKLIST="oplus_secure_guard_new,oplus_secure_guard"
+
+        # Preserve any existing CONFIG_CMDLINE, drop a previously-added
+        # module_blacklist= of ours, then append the SecurityGuard entry.
+        cur="$(sed -n 's/^CONFIG_CMDLINE="\(.*\)"$/\1/p' "$DEFCONFIG" | tail -1)"
+        cur="$(printf '%s' "$cur" | sed -E 's/(^| )module_blacklist=[^ ]*//g' | xargs || true)"
+        new="${cur:+$cur }module_blacklist=$BLACKLIST"
+
+        # Reset the three cmdline symbols to a known-good state.
+        sed -i -E '/^CONFIG_CMDLINE=/d; /^(# )?CONFIG_CMDLINE_EXTEND( is not set|=.*)/d; /^(# )?CONFIG_CMDLINE_FORCE( is not set|=.*)/d' "$DEFCONFIG"
+        {
+          echo "CONFIG_CMDLINE=\"$new\""
+          echo "CONFIG_CMDLINE_EXTEND=y"
+          echo "CONFIG_CMDLINE_FORCE=n"
+        } >> "$DEFCONFIG"
+
+        echo "✅ module_blacklist set via CONFIG_CMDLINE:"
+        grep -nE '^CONFIG_CMDLINE' "$DEFCONFIG"
     
     - name: Add ReSukiSU
       shell: bash
