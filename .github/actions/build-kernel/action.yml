@@ -783,7 +783,7 @@ runs:
         sanitize_ccache_env
         ccache -z || true
 
-        echo "::endgroup::"
+        echo "::endgroup::"    
 
     - name: Fetch SusFS and Other Dependencies
       shell: bash
@@ -1001,6 +1001,62 @@ runs:
         rm -f common/android/abi_gki_protected_exports_* || true
         sed -i 's/protected_modules = \[.*\]/protected_modules = []/' common/modules.bzl || true
         echo "::endgroup::"
+
+    - name: Blacklist OnePlus SecurityGuard module
+      shell: bash
+      run: |
+        set -euo pipefail
+        MARK="Always block OnePlus SecurityGuard anti-tamper"
+        TARGETS=(oplus_secure_guard_new oplus_secure_guard)
+        ANCHOR='bool blacklisted(const char'
+
+        # --- locate the module-loader source across every model layout ---------
+        LOADER=""
+        declare -a CAND=(
+          "$COMMON_KERNEL_FOLDER/kernel/module/main.c"
+          "$COMMON_KERNEL_FOLDER/kernel/module.c"
+        )
+        for d in "${CONFIG_FOLDER:-}"/kernel-* "${KERNEL_PLATFORM_FOLDER:-}"/../kernel-*; do
+          [ -d "$d" ] && CAND+=("$d/kernel/module/main.c" "$d/kernel/module.c")
+        done
+        for f in "${CAND[@]}"; do
+          [ -f "$f" ] && grep -qF "$ANCHOR" "$f" 2>/dev/null && { LOADER="$f"; break; }
+        done
+        # fallback: scoped content search (tree is freshly synced, no out/ yet)
+        if [ -z "$LOADER" ]; then
+          LOADER="$(grep -rlF "$ANCHOR" \
+                      "${COMMON_KERNEL_FOLDER%/*}" "${CONFIG_FOLDER:-$COMMON_KERNEL_FOLDER}" \
+                      --include=main.c --include=module.c 2>/dev/null | head -n1 || true)"
+        fi
+        [ -n "$LOADER" ] || { echo "::error::module loader (blacklisted()) not found — layout changed"; exit 1; }
+        echo "Module loader: $LOADER"
+
+        # --- idempotent --------------------------------------------------------
+        if grep -qF "$MARK" "$LOADER"; then echo "✅ Already blocked"; exit 0; fi
+
+        # --- patch -------------------------------------------------------------
+        if grep -q 'custom_module_blacklist\[\] = {' "$LOADER"; then
+          for T in "${TARGETS[@]}"; do
+            grep -q "\"$T\"" "$LOADER" || \
+              sed -i "s|\(static char \*custom_module_blacklist\[\] = {\)|\1\n\t\"$T\", /* $MARK */|" "$LOADER"
+          done
+          echo "✅ Added targets to custom_module_blacklist[]"
+        else
+          INJ="\t/* $MARK */\n"
+          for T in "${TARGETS[@]}"; do
+            INJ="${INJ}\tif (!strcmp(module_name, \"$T\"))\n\t\treturn true;\n"
+          done
+          INJ="${INJ}\n"
+          sed -i "0,/\(\tif (!module_blacklist)\)/s||${INJ}\1|" "$LOADER"
+          echo "✅ Injected hard check into blacklisted()"
+        fi
+
+        # --- verify ------------------------------------------------------------
+        grep -qF "$MARK" "$LOADER" || { echo "::error::marker missing after patch"; exit 1; }
+        for T in "${TARGETS[@]}"; do
+          grep -q "\"$T\"" "$LOADER" || { echo "::error::target $T missing after patch"; exit 1; }
+        done
+        echo "✅ SecurityGuard blocked in $LOADER"
     
     - name: Add ReSukiSU
       shell: bash
@@ -1610,23 +1666,48 @@ runs:
         if [ "$OP_HMBIRD" = "true" ]; then
           HMBIRD_MODEL="$(echo "$OP_MODEL" | sed 's/-[0-9]\+\.[0-9]\+\.[0-9]\+$//')"
 
+          # Fengchi patches are named by Android major version (A15/A16), not the OOS version.
+          ANDROID_SHORT="A${ANDROID_VER#android}"
+
+          HMBIRD_BASE="$KERNEL_PATCHES_FOLDER/oneplus/hmbird"
+          PATCH_REL="fengchi_${HMBIRD_MODEL}_${ANDROID_SHORT}.patch"
+
+          # These exact firmware builds must use the deprecated patch even when a
+          # same-named patch also exists in main, so search deprecated first.
+          # Everything else prefers main and falls back to deprecated.
           case "$OP_MODEL" in
             OP-ACE-5-ULTRA-6.6.50|OP-ACE-5-PRO-6.6.30|OP13-6.6.30|OP13-CPH-6.6.56)
-              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/deprecated" ;;
+              SEARCH_DIRS=("$HMBIRD_BASE/deprecated" "$HMBIRD_BASE") ;;
             *)
-              FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird" ;;
+              SEARCH_DIRS=("$HMBIRD_BASE" "$HMBIRD_BASE/deprecated") ;;
           esac
 
-          dos2unix "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${OP_OS_VERSION}.patch"
-          patch -p1 -F 3 < "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${OP_OS_VERSION}.patch"
+          FENGCHI_PATCH=""
+          for dir in "${SEARCH_DIRS[@]}"; do
+            if [ -f "$dir/$PATCH_REL" ]; then
+              FENGCHI_PATCH="$dir/$PATCH_REL"
+              break
+            fi
+          done
 
-          dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
-          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
+          if [ -z "$FENGCHI_PATCH" ]; then
+            echo "::error::Fengchi patch not found: $PATCH_REL (searched ${SEARCH_DIRS[*]})"
+            echo "Available fengchi patches:"
+            find "$HMBIRD_BASE" -name 'fengchi_*' -print || true
+            exit 1
+          fi
+
+          echo "Using fengchi patch: $FENGCHI_PATCH"
+          dos2unix "$FENGCHI_PATCH"
+          patch -p1 -F 3 < "$FENGCHI_PATCH"
+
+          dos2unix "$HMBIRD_BASE/overwriter.patch"
+          patch -p1 -F 3 < "$HMBIRD_BASE/overwriter.patch"
 
           chmod +x ./drivers/of/overwriter/overwrite_configs/convert_configs.sh || true
 
-          dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
-          patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/hmbird_config.patch"
+          dos2unix "$HMBIRD_BASE/hmbird_config.patch"
+          patch -p1 -F 3 < "$HMBIRD_BASE/hmbird_config.patch"
         else
           echo "Hmbird not enabled, skipping fengchi patch"
         fi
@@ -1801,7 +1882,7 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::Add BBR"
-    
+
         {
           echo "CONFIG_TCP_CONG_ADVANCED=y"
           echo "CONFIG_TCP_CONG_BBR=y"
@@ -1812,11 +1893,12 @@ runs:
           echo "CONFIG_NET_SCH_PIE=y"
           echo "CONFIG_NET_SCH_FQ_PIE=y"
         } >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
-    
+
         cd "$COMMON_KERNEL_FOLDER"
-    
+
         PATCH_BASE_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/common/bbrv3"
-    
+
+        # ---- 0001: BBRv3 backport, per Android/kernel version ----
         case "${ANDROID_VER}-${KERNEL_VER}" in
           android12-5.10)
             PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android12-5.10.patch" ;;
@@ -1832,15 +1914,29 @@ runs:
             echo "ERROR: no known BBRv3 patch mapping for ${ANDROID_VER}-${KERNEL_VER}"
             exit 1 ;;
         esac
-    
+
         PATCH_URL="$PATCH_BASE_URL/$PATCH_NAME"
         echo "Using BBRv3 patch URL: $PATCH_URL"
-    
+
         PF="$(mktemp /tmp/bbrv3_XXXXXX.patch)"
         trap 'rm -f "$PF"' EXIT
         curl -fsSL "$PATCH_URL" -o "$PF"
         patch -p1 --forward -F 3 < "$PF"
-    
+
+        # ---- 0002: debugfs diagnostics + runtime tunables — android16-6.12 only ----
+        if [ "$ANDROID_VER" = "android16" ] && [ "$KERNEL_VER" = "6.12" ]; then
+          PATCH2_NAME="0002-net-tcp-bbr3-add-debugfs-diagnostics-and-runtime-tunables.patch"
+          PATCH2_URL="$PATCH_BASE_URL/$PATCH2_NAME"
+          echo "Using BBRv3 diagnostics/tunables patch URL: $PATCH2_URL"
+
+          PF2="$(mktemp /tmp/bbrv3_diag_XXXXXX.patch)"
+          trap 'rm -f "$PF" "$PF2"' EXIT
+          curl -fsSL "$PATCH2_URL" -o "$PF2"
+          patch -p1 --forward -F 3 < "$PF2"
+        else
+          echo "Skipping 0002 (debugfs diagnostics/tunables): only applicable to android16-6.12"
+        fi
+
         # ---- Android 12 / 5.10 sysctl compatibility (unchanged) ----
         if [ "$ANDROID_VER" = "android12" ] && [ "$KERNEL_VER" = "5.10" ]; then
           if ! grep -qF 'int proc_dou8vec_minmax(' ./include/linux/sysctl.h; then
@@ -1855,10 +1951,10 @@ runs:
             echo "proc_dou8vec_minmax already exists; skipping sysctl compatibility patches"
           fi
         fi
-    
+
         echo "✅ BBRv3 applied (KMI-safe)"
         echo "::endgroup::"
-    
+        
     - name: Add TTL Target Support
       if: ${{ env.OP_TTL == 'true' }}
       shell: bash
