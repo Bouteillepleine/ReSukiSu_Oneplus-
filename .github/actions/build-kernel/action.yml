@@ -1882,7 +1882,7 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::Add BBR"
-    
+
         {
           echo "CONFIG_TCP_CONG_ADVANCED=y"
           echo "CONFIG_TCP_CONG_BBR=y"
@@ -1893,11 +1893,12 @@ runs:
           echo "CONFIG_NET_SCH_PIE=y"
           echo "CONFIG_NET_SCH_FQ_PIE=y"
         } >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
-    
+
         cd "$COMMON_KERNEL_FOLDER"
-    
+
         PATCH_BASE_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/common/bbrv3"
-    
+
+        # ---- 0001: BBRv3 backport, per Android/kernel version ----
         case "${ANDROID_VER}-${KERNEL_VER}" in
           android12-5.10)
             PATCH_NAME="0001-net-tcp-backport-BBRv3-to-android12-5.10.patch" ;;
@@ -1913,15 +1914,29 @@ runs:
             echo "ERROR: no known BBRv3 patch mapping for ${ANDROID_VER}-${KERNEL_VER}"
             exit 1 ;;
         esac
-    
+
         PATCH_URL="$PATCH_BASE_URL/$PATCH_NAME"
         echo "Using BBRv3 patch URL: $PATCH_URL"
-    
+
         PF="$(mktemp /tmp/bbrv3_XXXXXX.patch)"
         trap 'rm -f "$PF"' EXIT
         curl -fsSL "$PATCH_URL" -o "$PF"
         patch -p1 --forward -F 3 < "$PF"
-    
+
+        # ---- 0002: debugfs diagnostics + runtime tunables — android16-6.12 only ----
+        if [ "$ANDROID_VER" = "android16" ] && [ "$KERNEL_VER" = "6.12" ]; then
+          PATCH2_NAME="0002-net-tcp-bbr3-add-debugfs-diagnostics-and-runtime-tunables.patch"
+          PATCH2_URL="$PATCH_BASE_URL/$PATCH2_NAME"
+          echo "Using BBRv3 diagnostics/tunables patch URL: $PATCH2_URL"
+
+          PF2="$(mktemp /tmp/bbrv3_diag_XXXXXX.patch)"
+          trap 'rm -f "$PF" "$PF2"' EXIT
+          curl -fsSL "$PATCH2_URL" -o "$PF2"
+          patch -p1 --forward -F 3 < "$PF2"
+        else
+          echo "Skipping 0002 (debugfs diagnostics/tunables): only applicable to android16-6.12"
+        fi
+
         # ---- Android 12 / 5.10 sysctl compatibility (unchanged) ----
         if [ "$ANDROID_VER" = "android12" ] && [ "$KERNEL_VER" = "5.10" ]; then
           if ! grep -qF 'int proc_dou8vec_minmax(' ./include/linux/sysctl.h; then
@@ -1936,10 +1951,10 @@ runs:
             echo "proc_dou8vec_minmax already exists; skipping sysctl compatibility patches"
           fi
         fi
-    
+
         echo "✅ BBRv3 applied (KMI-safe)"
         echo "::endgroup::"
-    
+        
     - name: Add TTL Target Support
       if: ${{ env.OP_TTL == 'true' }}
       shell: bash
