@@ -2222,32 +2222,48 @@ runs:
           scripts/config --file "$OUT/.config" -d "$sym" 2>/dev/null || true
         done
 
-        # AutoFDO. The trees ship a profile; the path moved between branches:
+        # AutoFDO. Only enabled on branches whose ABI-neutrality we have actually measured
+        # (Module.symvers byte-identical vs the same build without AFDO):
+        #   wild/sm8850  6.12 / LTO=none  0 of 18673 CRCs changed
+        #   wild/sm8750  6.6  / LTO=thin  0 of 16824 CRCs changed
+        # wild/sm8845 is the same Oryon/Qualcomm family and 6.12 tree, so it is included.
+        # Everything else (mt6993, mt6789, mt6991, sm8735, mt6833, and all 5.x/6.1) builds
+        # exactly as before -- deliberately opt-in per branch rather than fleet-wide.
+        #
+        # Profile path differs by version:
         #   6.12 -> gki/aarch64/afdo/kernel.afdo         (CONFIG_AUTOFDO_CLANG=y already in gki_defconfig)
-        #   6.6  -> android/gki/aarch64/afdo/kernel.afdo (opt-in; ships autofdo_gki.fragment instead)
+        #   6.6  -> android/gki/aarch64/afdo/kernel.afdo (opt-in; tree ships autofdo_gki.fragment)
         # scripts/Makefile.autofdo is pulled in via "include-$(CONFIG_AUTOFDO_CLANG)", so on 6.6
-        # CLANG_AUTOFDO_PROFILE is silently ignored unless we set the symbol ourselves. Enable it
-        # here so the olddefconfig below validates it. Trees with no profile (a14/6.1) are untouched.
+        # CLANG_AUTOFDO_PROFILE is silently ignored unless we set the symbol ourselves. Set it
+        # here so the olddefconfig below validates it.
         AFDO_ARGS=()
         AFDO_PROFILE=""
-        afdo_candidates=(
-          "$COMMON_KERNEL_FOLDER/gki/aarch64/afdo/kernel.afdo"
-          "$COMMON_KERNEL_FOLDER/android/gki/aarch64/afdo/kernel.afdo"
-        )
-        for afdo_p in "${afdo_candidates[@]}"; do
-          if [ -f "$afdo_p" ]; then
-            AFDO_PROFILE="$afdo_p"
-            scripts/config --file "$OUT/.config" -e AUTOFDO_CLANG
-            echo "✅ AFDO profile: $afdo_p"
-            break
-          fi
-        done
+        case "$OP_BRANCH" in
+          wild/sm8850|wild/sm8845|wild/sm8750) afdo_allowed=1 ;;
+          *)                                   afdo_allowed=0 ;;
+        esac
+        if [ "$afdo_allowed" = 1 ]; then
+          afdo_candidates=(
+            "$COMMON_KERNEL_FOLDER/gki/aarch64/afdo/kernel.afdo"
+            "$COMMON_KERNEL_FOLDER/android/gki/aarch64/afdo/kernel.afdo"
+          )
+          for afdo_p in "${afdo_candidates[@]}"; do
+            if [ -f "$afdo_p" ]; then
+              AFDO_PROFILE="$afdo_p"
+              scripts/config --file "$OUT/.config" -e AUTOFDO_CLANG
+              echo "✅ AFDO profile: $afdo_p"
+              break
+            fi
+          done
+        fi
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" olddefconfig
 
         # AUTOFDO_CLANG has Kconfig deps (CC_IS_CLANG, CLANG_VERSION >= 170000). If unmet,
         # olddefconfig drops it silently and the profile would be ignored. Only pass the profile
         # if the symbol actually survived, so we never report AFDO we did not get.
-        if [ -n "$AFDO_PROFILE" ]; then
+        if [ "$afdo_allowed" != 1 ]; then
+          echo "AutoFDO not enabled for $OP_BRANCH (not verified on this branch)"
+        elif [ -n "$AFDO_PROFILE" ]; then
           if grep -q '^CONFIG_AUTOFDO_CLANG=y$' "$OUT/.config"; then
             AFDO_ARGS=(CLANG_AUTOFDO_PROFILE="$AFDO_PROFILE")
             echo "✅ AutoFDO enabled (CONFIG_AUTOFDO_CLANG=y)"
