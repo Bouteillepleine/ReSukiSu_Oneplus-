@@ -2177,7 +2177,16 @@ runs:
         
         case "$OP_BRANCH" in
           wild/sm8750|wild/sm8850|wild/sm8845)
-            KCFLAGS_EXTRA="-mcpu=oryon-1 ${KCFLAGS_EXTRA}"
+            # -mcpu=oryon-1 needs LLVM >= 19.1 (llvm-project#91022, merged May 2024).
+            # The tree-declared toolchains (build.config.constants: r536225 on 6.12,
+            # r510928 on 6.6) predate it and hard-error on it, so probe before adding.
+            if "${CLANG_BIN_PATH}/clang" --target=aarch64-linux-gnu -mcpu=oryon-1 \
+                 -x c -c -o /dev/null /dev/null >/dev/null 2>&1; then
+              KCFLAGS_EXTRA="-mcpu=oryon-1 ${KCFLAGS_EXTRA}"
+              echo "✅ clang accepts -mcpu=oryon-1"
+            else
+              echo "::warning::clang does not accept -mcpu=oryon-1; building without it"
+            fi
             ;;
         esac
         
@@ -2213,7 +2222,41 @@ runs:
           scripts/config --file "$OUT/.config" -d "$sym" 2>/dev/null || true
         done
 
+        # AutoFDO. The trees ship a profile; the path moved between branches:
+        #   6.12 -> gki/aarch64/afdo/kernel.afdo         (CONFIG_AUTOFDO_CLANG=y already in gki_defconfig)
+        #   6.6  -> android/gki/aarch64/afdo/kernel.afdo (opt-in; ships autofdo_gki.fragment instead)
+        # scripts/Makefile.autofdo is pulled in via "include-$(CONFIG_AUTOFDO_CLANG)", so on 6.6
+        # CLANG_AUTOFDO_PROFILE is silently ignored unless we set the symbol ourselves. Enable it
+        # here so the olddefconfig below validates it. Trees with no profile (a14/6.1) are untouched.
+        AFDO_ARGS=()
+        AFDO_PROFILE=""
+        afdo_candidates=(
+          "$COMMON_KERNEL_FOLDER/gki/aarch64/afdo/kernel.afdo"
+          "$COMMON_KERNEL_FOLDER/android/gki/aarch64/afdo/kernel.afdo"
+        )
+        for afdo_p in "${afdo_candidates[@]}"; do
+          if [ -f "$afdo_p" ]; then
+            AFDO_PROFILE="$afdo_p"
+            scripts/config --file "$OUT/.config" -e AUTOFDO_CLANG
+            echo "✅ AFDO profile: $afdo_p"
+            break
+          fi
+        done
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" olddefconfig
+
+        # AUTOFDO_CLANG has Kconfig deps (CC_IS_CLANG, CLANG_VERSION >= 170000). If unmet,
+        # olddefconfig drops it silently and the profile would be ignored. Only pass the profile
+        # if the symbol actually survived, so we never report AFDO we did not get.
+        if [ -n "$AFDO_PROFILE" ]; then
+          if grep -q '^CONFIG_AUTOFDO_CLANG=y$' "$OUT/.config"; then
+            AFDO_ARGS=(CLANG_AUTOFDO_PROFILE="$AFDO_PROFILE")
+            echo "✅ AutoFDO enabled (CONFIG_AUTOFDO_CLANG=y)"
+          else
+            echo "::warning::AFDO profile found but CONFIG_AUTOFDO_CLANG did not stick; building without AutoFDO"
+          fi
+        else
+          echo "::warning::No AFDO profile in tree; building without AutoFDO"
+        fi
         
         KCFLAGS="$KCFLAGS -Wno-error -pipe ${KCFLAGS_EXTRA}"
         KCPPFLAGS="$KCPPFLAGS -DCONFIG_OPTIMIZE_INLINING"
@@ -2248,8 +2291,8 @@ runs:
         set -o pipefail
         
         if [ "${{ inputs.debug }}" == "true" ]; then
-          make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" Image modules 2>&1 | tee build.log
-          make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$COMMON_KERNEL_FOLDER/out" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" INSTALL_MOD_PATH="$COMMON_KERNEL_FOLDER/out/install" modules_install 2>&1 | tee install.log
+          make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" "${AFDO_ARGS[@]}" Image modules 2>&1 | tee build.log
+          make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$COMMON_KERNEL_FOLDER/out" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" "${AFDO_ARGS[@]}" INSTALL_MOD_PATH="$COMMON_KERNEL_FOLDER/out/install" modules_install 2>&1 | tee install.log
           
           cp build.log "$DEBUG_ARTIFACTS_FOLDER/build.log"
           cp install.log "$DEBUG_ARTIFACTS_FOLDER/install.log"
@@ -2260,7 +2303,7 @@ runs:
           
           ls -la "$DEBUG_ARTIFACTS_FOLDER"
         else
-          make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" Image 2>&1 | tee build.log
+          make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" "${AFDO_ARGS[@]}" Image 2>&1 | tee build.log
         fi
         
         BUILD_END=$(date +%s)
