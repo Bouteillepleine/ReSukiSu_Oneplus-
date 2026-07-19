@@ -2499,14 +2499,16 @@ runs:
         mkdir -p "$AK3_FOLDER"
         MODULE_PATH="$AK3_FOLDER/$MODULE_NAME"
 
+        # `|| true` keeps a transient API failure (e.g. 503) on the warning
+        # path below instead of killing the step under set -e
         LATEST_RUN_ID="$(
-          curl -fsSL \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${REPO}/actions/runs?status=success&per_page=50" |
           jq -r --arg branch "$BRANCH" '
             .workflow_runs[] | select(.head_branch == $branch) | .id
-          ' | head -n 1
+          ' | head -n 1 || true
         )"
 
         if [ -z "$LATEST_RUN_ID" ] || [ "$LATEST_RUN_ID" = "null" ]; then
@@ -2516,12 +2518,12 @@ runs:
         fi
 
         ARTIFACT_URL="$(
-          curl -fsSL \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${REPO}/actions/runs/${LATEST_RUN_ID}/artifacts" |
           jq -r '.artifacts[] | select(.expired == false) | .archive_download_url' |
-          head -n 1
+          head -n 1 || true
         )"
 
         if [ -z "$ARTIFACT_URL" ] || [ "$ARTIFACT_URL" = "null" ]; then
@@ -2530,7 +2532,7 @@ runs:
           exit 0
         fi
 
-        if curl -fL \
+        if curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
           -H "Authorization: Bearer ${GH_TOKEN}" \
           -H "Accept: application/vnd.github+json" \
           -o "$MODULE_PATH" \
