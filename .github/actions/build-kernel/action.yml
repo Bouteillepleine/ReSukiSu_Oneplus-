@@ -11,6 +11,11 @@ inputs:
     type: choice
     options:
       - RSKSU
+  ksu_repo:
+    description: 'ReSukiSU source repo as owner/name (use a fork to build your own kernel-side changes)'
+    required: false
+    type: string
+    default: "ReSukiSU/ReSukiSU"
   ksu_branch_or_hash:
     description: 'KSU branch or commit hash (empty = auto-detect by ksu_type)'
     required: false
@@ -915,45 +920,50 @@ runs:
 
         cd "$KERNEL_PLATFORM_FOLDER"
 
-        RSKSU_SETUP_SCRIPT="$(mktemp /tmp/rsksu_setup_XXXXXX.sh)"
-        trap 'rm -f "$RSKSU_SETUP_SCRIPT"' EXIT
-
-        echo "Downloading ReSukiSU setup script..."
-        if ! curl --fail --location --proto '=https' --tlsv1.2 -LSs \
-          --retry 5 --retry-delay 5 --retry-all-errors \
-          "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" \
-          -o "$RSKSU_SETUP_SCRIPT"; then
-          echo "::error::Failed to download ReSukiSU setup.sh after retries"
-          exit 1
-        fi
-
-        SCRIPT_SIZE="$(stat -c%s "$RSKSU_SETUP_SCRIPT")"
-        if [ "$SCRIPT_SIZE" -lt 512 ]; then
-          echo "::error::Downloaded setup.sh is suspiciously small (${SCRIPT_SIZE} bytes). Aborting."
-          exit 1
-        fi
-
-        if ! head -n1 "$RSKSU_SETUP_SCRIPT" | grep -q '^#!'; then
-          echo "::error::Downloaded setup.sh does not start with a shebang. Aborting."
-          exit 1
-        fi
-
-        chmod +x "$RSKSU_SETUP_SCRIPT"
-
+        # Upstream's kernel/setup.sh hardcodes its own clone URL, so it can only
+        # ever build ReSukiSU/ReSukiSU. We do the same wiring inline instead,
+        # which lets ksu_repo point at a fork carrying kernel-side changes.
+        KSU_REPO="${{ inputs.ksu_repo }}"
+        KSU_REPO="${KSU_REPO:-ReSukiSU/ReSukiSU}"
         KSU_INPUT="${{ inputs.ksu_branch_or_hash }}"
-        if [ -z "$KSU_INPUT" ]; then
-          echo "No branch/hash provided — using default installer mode."
-          bash "$RSKSU_SETUP_SCRIPT"
-        else
-          echo "Using ReSukiSU branch/hash: $KSU_INPUT"
-          bash "$RSKSU_SETUP_SCRIPT" "$KSU_INPUT"
-        fi
 
-        if [ ! -d "$KERNEL_PLATFORM_FOLDER/KernelSU" ]; then
-          echo "::error::KernelSU directory was not created by ReSukiSU setup."
-          find "$KERNEL_PLATFORM_FOLDER" -maxdepth 3 -type d \( -iname "*ksu*" -o -iname "*resuki*" \) || true
+        if ! printf '%s' "$KSU_REPO" | grep -qE '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'; then
+          echo "::error::ksu_repo must be owner/name, got: $KSU_REPO"
           exit 1
         fi
+
+        # Mirror setup.sh: drivers/ lives at common/drivers on GKI trees.
+        if [ -d "$KERNEL_PLATFORM_FOLDER/common/drivers" ]; then
+          DRIVER_DIR="$KERNEL_PLATFORM_FOLDER/common/drivers"
+        elif [ -d "$KERNEL_PLATFORM_FOLDER/drivers" ]; then
+          DRIVER_DIR="$KERNEL_PLATFORM_FOLDER/drivers"
+        else
+          echo "::error::drivers/ directory not found under $KERNEL_PLATFORM_FOLDER"
+          exit 1
+        fi
+
+        echo "Cloning ReSukiSU from $KSU_REPO ${KSU_INPUT:+(ref: $KSU_INPUT)}"
+        rm -rf "$KERNEL_PLATFORM_FOLDER/KernelSU"
+        # Full clone on purpose: the version step below derives KSU_VERSION from
+        # `git rev-list --count HEAD`, which a shallow clone would report as 1.
+        git clone "https://github.com/${KSU_REPO}.git" "$KERNEL_PLATFORM_FOLDER/KernelSU"
+        if [ -n "$KSU_INPUT" ]; then
+          git -C "$KERNEL_PLATFORM_FOLDER/KernelSU" checkout "$KSU_INPUT"
+        fi
+
+        if [ ! -d "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel" ]; then
+          echo "::error::$KSU_REPO does not contain a kernel/ directory — wrong repo?"
+          exit 1
+        fi
+
+        # Symlink + Makefile/Kconfig wiring, identical to upstream setup.sh.
+        ln -sfn "$(realpath --relative-to="$DRIVER_DIR" "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel")" \
+          "$DRIVER_DIR/kernelsu"
+        grep -q "kernelsu" "$DRIVER_DIR/Makefile" || \
+          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$DRIVER_DIR/Makefile"
+        grep -q 'source "drivers/kernelsu/Kconfig"' "$DRIVER_DIR/Kconfig" || \
+          sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' "$DRIVER_DIR/Kconfig"
+        echo "✅ Driver wired into $DRIVER_DIR"
 
         cd "$KERNEL_PLATFORM_FOLDER/KernelSU"
 

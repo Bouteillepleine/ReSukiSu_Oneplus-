@@ -39,8 +39,13 @@ on:
         required: false
         type: string
         default: ''
+      ksu_repo:
+        description: 'ReSukiSU source repo (owner/name). Use a fork to build your own kernel-side changes.'
+        required: false
+        type: string
+        default: 'ReSukiSU/ReSukiSU'
       ksu_options:
-        description: 'Enter ReSukiSU build json'
+        description: 'Enter ReSukiSU build json. "hash" is the branch/tag/commit inside ksu_repo.'
         required: true
         type: string
         default: '[{"type":"rsksu","hash":"main"}]'
@@ -237,8 +242,13 @@ jobs:
           ksu_type=$(echo "$ksu_options_normalized" | jq -r '.[0].type')
           ksu_ref=$(echo "$ksu_options_normalized" | jq -r '.[0].hash')
           
-          KSU_REPO_OWNER="ReSukiSU"
-          KSU_REPO_NAME="ReSukiSU"
+          # Resolve against whichever repo the build will actually clone,
+          # otherwise a fork-only branch looks missing here.
+          KSU_REPO_INPUT="${{ inputs.ksu_repo }}"
+          KSU_REPO_INPUT="${KSU_REPO_INPUT:-ReSukiSU/ReSukiSU}"
+          KSU_REPO_OWNER="${KSU_REPO_INPUT%%/*}"
+          KSU_REPO_NAME="${KSU_REPO_INPUT##*/}"
+          echo "Resolving against $KSU_REPO_OWNER/$KSU_REPO_NAME"
           
           HEAD_REF="refs/heads/${ksu_ref}"
           TAG_REF="refs/tags/${ksu_ref}"
@@ -726,6 +736,7 @@ jobs:
         with:
           op_config_json: ${{ steps.prepare_config.outputs.config_json }}
           ksu_type: ${{ matrix.ksu_type }}
+          ksu_repo: ${{ inputs.ksu_repo }}
           ksu_branch_or_hash: ${{ matrix.ksu_resolved_hash }}
           susfs_commit_hash_or_branch: ${{ matrix.susfs_resolved_hash }}
           optimize_level: ${{ inputs.optimize_level }}
