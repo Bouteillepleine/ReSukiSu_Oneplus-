@@ -33,22 +33,25 @@ on:
           - android14-6.1
           - android13-5.15
           - android12-5.10
-        default: A14+15+16
+        default: A16
       op_target_model:
         description: 'Optional exact/prefix model: OP12, OP13-CPH, OP-NORD-4, OP12-6.1.118. Case-sensitive. Empty = all.'
         required: false
         type: string
-        default: ''
+        # Our device. Clear this to build every model matching op_model.
+        default: 'OP15'
+      # This branch exists to build our own fork, so it defaults to it.
+      # Set these back to ReSukiSU/ReSukiSU + main to build upstream instead.
       ksu_repo:
         description: 'ReSukiSU source repo (owner/name). Use a fork to build your own kernel-side changes.'
         required: false
         type: string
-        default: 'ReSukiSU/ReSukiSU'
+        default: 'Bouteillepleine/ReSukiSU'
       ksu_options:
         description: 'Enter ReSukiSU build json. "hash" is the branch/tag/commit inside ksu_repo.'
         required: true
         type: string
-        default: '[{"type":"rsksu","hash":"main"}]'
+        default: '[{"type":"rsksu","hash":"Mine"}]'
       optimize_level:
         description: "Compiler optimization level"
         required: true
