@@ -880,8 +880,14 @@ runs:
         
         retry_clone "https://github.com/WildKernels/kernel_patches.git" "main" "1"
 
+        # Bouteillepleine kernel_patches is always cloned because BBRv3 uses it
+        # for all Android/kernel versions.
+        retry_clone "https://github.com/Bouteillepleine/kernel_patches.git" "main" "1" "bouton_kernel_patches"
+
+        echo "BOUTEILLE_KERNEL_PATCHES_FOLDER=$GITHUB_WORKSPACE/bouton_kernel_patches" >> "$GITHUB_ENV"
+        echo "BOUTEILLE_BBR3_PATCHES_FOLDER=$GITHUB_WORKSPACE/bouton_kernel_patches/common/bbrv3" >> "$GITHUB_ENV"
+
         if [ "${{ inputs.enable_adios }}" = "true" ]; then
-          retry_clone "https://github.com/Bouteillepleine/kernel_patches.git" "main" "1" "bouton_kernel_patches"
           echo "ADIOS_PATCHES_FOLDER=$GITHUB_WORKSPACE/bouton_kernel_patches/experimental" >> "$GITHUB_ENV"
         fi
         
@@ -893,6 +899,7 @@ runs:
           fi
           echo "SUSFS_COMMIT_SHA=$SUSFS_BRANCH" >> $GITHUB_ENV
         fi
+
         echo "✅ Dependencies cloned"
         echo "::endgroup::"
 
@@ -1708,30 +1715,50 @@ runs:
         set -euo pipefail
         echo "::group::Apply BBRv3 patches"
         cd "$COMMON_KERNEL_FOLDER"
+
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_TCP_CONG_ADVANCED=y
         CONFIG_TCP_CONG_BBR3=y
         EOF
-        BBR3_DIR="$KERNEL_PATCHES_FOLDER/common/bbrv3"
-        if [ "$ANDROID_VER" = "android16" ] && [ "$KERNEL_VER" = "6.12" ]; then
-          # WildKernels kernel_patches ships no 6.12 BBRv3 backport; pull it (plus the
-          # bbr3 debugfs/tunables patch that backs /sys/kernel/debug/tcp_bbr3) from
-          # Bouteillepleine/kernel_patches.
-          mkdir -p "$BBR3_DIR"
-          RAW="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/common/bbrv3"
-          curl --fail --location --proto '=https' --tlsv1.2 -LSs \
-            "$RAW/0001-net-tcp-backport-BBRv3-to-android16-6.12.patch" \
-            -o "$BBR3_DIR/0001-net-tcp-backport-BBRv3-to-android16-6.12.patch"
-          curl --fail --location --proto '=https' --tlsv1.2 -LSs \
-            "$RAW/0002-net-tcp-bbr3-add-debugfs-diagnostics-and-runtime-tunables.patch" \
-            -o "$BBR3_DIR/0002-net-tcp-bbr3-add-debugfs-diagnostics-and-runtime-tunables.patch"
-          patch -p1 < "$BBR3_DIR/0001-net-tcp-backport-BBRv3-to-android16-6.12.patch"
-          patch -p1 < "$BBR3_DIR/0002-net-tcp-bbr3-add-debugfs-diagnostics-and-runtime-tunables.patch"
-        else
-          patch -p1 < "$BBR3_DIR/0001-net-tcp-backport-BBRv3-to-$ANDROID_VER-$KERNEL_VER.patch"
+
+        BBR3_DIR="${BOUTEILLE_BBR3_PATCHES_FOLDER:-$GITHUB_WORKSPACE/bouton_kernel_patches/common/bbrv3}"
+
+        if [ ! -d "$BBR3_DIR" ]; then
+          echo "::error::Bouteillepleine BBRv3 patch directory not found: $BBR3_DIR"
+          exit 1
         fi
-        
-        echo "✅ BBRv3 patches applied"
+
+        MAIN_PATCH="$BBR3_DIR/0001-net-tcp-backport-BBRv3-to-$ANDROID_VER-$KERNEL_VER.patch"
+        DEBUGFS_PATCH="$BBR3_DIR/0002-net-tcp-bbr3-add-debugfs-diagnostics-and-runtime-tunables.patch"
+
+        if [ ! -f "$MAIN_PATCH" ]; then
+          echo "::error::BBRv3 patch not found for $ANDROID_VER-$KERNEL_VER"
+          echo "Expected: $MAIN_PATCH"
+          echo ""
+          echo "Available BBRv3 patches:"
+          find "$BBR3_DIR" -maxdepth 1 -type f -name "*.patch" -print | sort
+          exit 1
+        fi
+
+        echo "Using BBRv3 source: Bouteillepleine/kernel_patches"
+        echo "Patch directory: $BBR3_DIR"
+        echo "Applying main patch: $(basename "$MAIN_PATCH")"
+        patch -p1 < "$MAIN_PATCH"
+
+        if [ "$ANDROID_VER" = "android16" ] && [ "$KERNEL_VER" = "6.12" ]; then
+          if [ ! -f "$DEBUGFS_PATCH" ]; then
+            echo "::error::Required BBRv3 debugfs/tunables patch missing for android16-6.12"
+            echo "Expected: $DEBUGFS_PATCH"
+            exit 1
+          fi
+
+          echo "Applying 6.12-only debugfs/tunables patch: $(basename "$DEBUGFS_PATCH")"
+          patch -p1 < "$DEBUGFS_PATCH"
+        else
+          echo "Skipping debugfs/tunables patch for $ANDROID_VER-$KERNEL_VER"
+        fi
+
+        echo "✅ BBRv3 patches applied from Bouteillepleine/kernel_patches"
         echo "::endgroup::"
 
     - name: Enable Important Net Schedulers (qdisc)
