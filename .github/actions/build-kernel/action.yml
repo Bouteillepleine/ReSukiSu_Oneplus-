@@ -1758,6 +1758,29 @@ runs:
           echo "Skipping debugfs/tunables patch for $ANDROID_VER-$KERNEL_VER"
         fi
 
+        # The BBRv3 backport calls proc_dou8vec_minmax() in sysctl_net_ipv4.c but
+        # never declares it - it does not touch include/linux/sysctl.h. The helper
+        # only landed upstream in 5.12, so on 5.10 trees that predate the stable
+        # backport the build dies with "use of undeclared identifier". Supply it,
+        # but only when genuinely absent: newer 5.10.y already carries it and the
+        # patch would fail as already-applied.
+        if ! grep -qF 'int proc_dou8vec_minmax(' ./include/linux/sysctl.h; then
+          echo "proc_dou8vec_minmax() missing from this tree - applying sysctl backports"
+          for p in sysctl_add_proc_dou8vec_minmax.patch \
+                   sysctl_fix_data-races_in_proc_dou8vec_minmax.patch; do
+            if [ ! -f "$BBR3_DIR/$p" ]; then
+              # Fail here rather than 20 minutes later in a confusing compile error.
+              echo "::error::BBRv3 needs $p but it is missing from $BBR3_DIR"
+              echo "Without it, $ANDROID_VER-$KERNEL_VER cannot compile BBRv3."
+              exit 1
+            fi
+            echo "Applying $p"
+            patch -p1 < "$BBR3_DIR/$p"
+          done
+        else
+          echo "proc_dou8vec_minmax() already present - skipping sysctl backports"
+        fi
+
         echo "✅ BBRv3 patches applied from Bouteillepleine/kernel_patches"
         echo "::endgroup::"
 
