@@ -897,8 +897,10 @@ jobs:
           
           echo "New tag: $NEW_TAG"
           echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
-          git tag $NEW_TAG
-          git push origin $NEW_TAG
+          # Do NOT `git push` the tag: the Actions GITHUB_TOKEN is refused when a pushed ref's
+          # tree contains .github/workflows/* ("without workflows permission"). The tag is
+          # created instead by `gh release create --target` below (REST API — not subject to
+          # the git-push workflow check), so no PAT is needed.
 
       - name: 📥 Download Artifacts
         uses: actions/download-artifact@v8
@@ -1335,6 +1337,7 @@ jobs:
         run: |
           gh release create "${{ env.NEW_TAG }}" \
             --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
+            --target "${{ github.sha }}" \
             --title "${{ env.RELEASE_NAME }}" \
             --notes-file release_notes.md \
             --draft

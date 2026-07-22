@@ -100,14 +100,14 @@ runs:
             if [ "$rc" -eq 1 ]; then
               echo "Release '$tag' not found. Creating release..."
 
-              if ! git rev-parse "$tag" >/dev/null 2>&1; then
-                GIT_COMMITTER_DATE="2015-01-01T12:00:00" git tag -a "$tag" -m "General Cache Storage" || true
-                git push origin "$tag" --force || true
-              fi
-
+              # Don't git-push the tag: the Actions GITHUB_TOKEN is refused when a pushed ref's
+              # tree contains .github/workflows/* ("without workflows permission"), which spammed
+              # every build log with 'remote rejected'/'failed to push'. gh release create makes
+              # the tag via the REST API (not subject to the git-push workflow check).
               if gh release create "$tag" \
                   --title "$tag" \
                   --notes "Automated cache storage" \
+                  --target "$GITHUB_SHA" \
                   --repo "$TARGET_REPO"; then
                 echo "✅ Release '$tag' created"
                 return 0
