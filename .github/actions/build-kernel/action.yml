@@ -1539,24 +1539,20 @@ runs:
           esac
           FENGCHI_PATCH="$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${OP_OS_VERSION}.patch"
           dos2unix "$FENGCHI_PATCH"
-          # OnePlus removed the CONFIG_SLIM_SCHED KABI block from newer trees, so the fengchi
-          # hunk that deletes it now rejects (e.g. sched.h hunk #3 on OP13/OP13T + 6.6.30 trees).
-          # That hunk is pure cleanup — HMBIRD (hunk #4) uses android_oem_data1, not KABI slots
-          # 1/2 — so when the tree no longer has the block, strip the obsolete hunk before applying.
-          # Conditional so devices whose trees still have it keep the original behaviour.
-          # Ref: Numbersf/SCHED_PATCH ca7c5c0 "remove obsolete CONFIG_SLIM_SCHED".
-          if ! grep -q 'ANDROID_KABI_USE(1, unsigned long sched_prop)' include/linux/sched.h; then
-            echo "Tree lacks the CONFIG_SLIM_SCHED KABI block — stripping the obsolete fengchi hunk"
-            FENGCHI_PATCH_FIXED="$(mktemp)"
-            awk '
-              function flush(){ if (buf != "" && buf !~ /ANDROID_KABI_USE\(1, unsigned long sched_prop\)/) printf "%s", buf; buf="" }
-              /^@@ /{ flush(); buf=$0 ORS; next }
-              /^diff --git/{ flush(); print; next }
-              { if (buf=="") print; else buf=buf $0 ORS }
-              END{ flush() }
-            ' "$FENGCHI_PATCH" > "$FENGCHI_PATCH_FIXED"
-            FENGCHI_PATCH="$FENGCHI_PATCH_FIXED"
-          fi
+          # The fengchi hunk that deletes OnePlus's CONFIG_SLIM_SCHED KABI block from task_struct
+          # (sched.h hunk #3) rejects on many trees — the block is absent, or present with divergent
+          # context (OP13/OP13T, 6.6.30, N30-SE). It is pure cleanup: HMBIRD (hunk #4) uses
+          # android_oem_data1 not KABI slots 1/2, and no fengchi hunk *adds* to slots 1/2 — so always
+          # drop that one hunk and leave SLIM_SCHED (stock) in place. Ref: Numbersf/SCHED_PATCH ca7c5c0.
+          FENGCHI_PATCH_FIXED="$(mktemp)"
+          awk '
+            function flush(){ if (buf != "" && buf !~ /ANDROID_KABI_USE\(1, unsigned long sched_prop\)/) printf "%s", buf; buf="" }
+            /^@@ /{ flush(); buf=$0 ORS; next }
+            /^diff --git/{ flush(); print; next }
+            { if (buf=="") print; else buf=buf $0 ORS }
+            END{ flush() }
+          ' "$FENGCHI_PATCH" > "$FENGCHI_PATCH_FIXED"
+          FENGCHI_PATCH="$FENGCHI_PATCH_FIXED"
           patch -p1 -F 3 < "$FENGCHI_PATCH"
           dos2unix "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
           patch -p1 -F 3 < "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/overwriter.patch"
