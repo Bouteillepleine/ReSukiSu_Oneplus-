@@ -42,7 +42,7 @@ inputs:
     type: boolean
     default: false
   enable_adios:
-    description: 'Enable ADIOS I/O scheduler support (6.1/6.6 kernels only)'
+    description: 'Enable ADIOS I/O scheduler support (5.10/5.15/6.1/6.6/6.12 kernels)'
     required: false
     type: boolean
     default: false
@@ -2061,8 +2061,17 @@ runs:
         PATCH_FILE=""
 
         case "${KERNEL_VER}" in
+          "6.12")
+            PATCH_FILE="$ADIOS_PATCHES_FOLDER/adios_ioscheduler_6.12.patch"
+            ;;
           "6.6")
             PATCH_FILE="$ADIOS_PATCHES_FOLDER/adios_ioscheduler_6.6.patch"
+            ;;
+          "5.15")
+            PATCH_FILE="$ADIOS_PATCHES_FOLDER/adios_ioscheduler_5.15.patch"
+            ;;
+          "5.10")
+            PATCH_FILE="$ADIOS_PATCHES_FOLDER/adios_ioscheduler_5.10.patch"
             ;;
           "6.1")
             if [ "${TKERNEL_VER:-}" = "6.1.115" ] \
@@ -2076,7 +2085,7 @@ runs:
             fi
             ;;
           *)
-            echo "::warning::ADIOS only configured for 6.1 and 6.6. Current: ${KERNEL_VER}"
+            echo "::warning::ADIOS not configured for kernel ${KERNEL_VER} (supported: 5.10, 5.15, 6.1, 6.6, 6.12)"
             echo "::endgroup::"
             exit 0
             ;;
