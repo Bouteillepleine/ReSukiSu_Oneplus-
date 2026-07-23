@@ -22,18 +22,13 @@ on:
         required: true
         type: choice
         options:
-          - A14+15+16
-          - A15+16
-          - A14+15
           - A16
-          - A15
-          - A14
           - android16-6.12
           - android15-6.6
           - android14-6.1
           - android13-5.15
           - android12-5.10
-        default: A14+15+16
+        default: A16
       op_target_model:
         description: 'Optional exact/prefix model: OP12, OP13-CPH, OP-NORD-4, OP12-6.1.118. Case-sensitive. Empty = all.'
         required: false
@@ -153,32 +148,18 @@ jobs:
           jq_filter="."
           
           case "$input" in
-            A14+15+16)
-              ;;
-            A15+16)
-              jq_filter="map(select(.os_version == \"A15\" or .os_version == \"A16\"))"
-              ;;
-            A14+15)
-              jq_filter="map(select(.os_version == \"A14\" or .os_version == \"A15\"))"
-              ;;
             A16)
               jq_filter="map(select(.os_version == \"A16\"))"
-              ;;
-            A15)
-              jq_filter="map(select(.os_version == \"A15\"))"
-              ;;
-            A14)
-              jq_filter="map(select(.os_version == \"A14\"))"
               ;;
             android*-*.*)
               # Extract android version and kernel version
               IFS='-' read -r av kv <<< "$input"
               
               # Build android*-* only for A15 and A16
-              jq_filter="map(select(.os_version == \"A15\" or .os_version == \"A16\")) | map(select(.android_version == \"$av\" and .kernel_version == \"$kv\"))"
+              jq_filter="map(select(.os_version == \"A16\")) | map(select(.android_version == \"$av\" and .kernel_version == \"$kv\"))"
               
               echo "ℹ️  Android-Kernel filter applied: $av-$kv"
-              echo "   Restricted to: A15 and A16 only"
+              echo "   Restricted to: A16 only"
               ;;
             *)
               echo "::warning::Unknown input '$input'. Using empty filter."
