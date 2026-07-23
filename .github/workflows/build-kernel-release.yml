@@ -155,7 +155,7 @@ jobs:
               # Extract android version and kernel version
               IFS='-' read -r av kv <<< "$input"
               
-              # Build android*-* only for A15 and A16
+              # Build android*-* only for A16
               jq_filter="map(select(.os_version == \"A16\")) | map(select(.android_version == \"$av\" and .kernel_version == \"$kv\"))"
               
               echo "ℹ️  Android-Kernel filter applied: $av-$kv"
@@ -536,7 +536,7 @@ jobs:
           # Add A restriction note for android-kernel filters
           if [[ "${{ inputs.op_model }}" == android*-*.* ]]; then
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "> **⚠️ Android-Kernel Filter:** Only A15 and A16 devices will be built for \`${{ inputs.op_model }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "> **⚠️ Android-Kernel Filter:** Only A16 devices will be built for \`${{ inputs.op_model }}\`" >> $GITHUB_STEP_SUMMARY
           fi
 
   mirror_toolchain:
@@ -930,13 +930,13 @@ jobs:
             echo "| What to check | Example |"
             echo "|---|---|"
             echo "| **Device** | \`OP12\`, \`OP13r\`, \`OP-NORD-4\` |"
-            echo "| **OS Version** | \`A16\`, \`A15\`, \`A14\` |"
+            echo "| **OS Version** | \`A16\` |"
             echo "| **Kernel Base** | \`android15-6.6.30\`, \`android14-6.1.75\` |"
             echo "| **Root Type** | \`RSKSU\` |"
             echo ""
           } > 00_DOWNLOADS.md
 
-          for os in A16 A15 A14; do
+          for os in A16; do
             mapfile -t files < <(find downloaded-artifacts -maxdepth 1 -type f -name "*_${os}_*.zip" | sort)
 
             if [ "${#files[@]}" -eq 0 ]; then
