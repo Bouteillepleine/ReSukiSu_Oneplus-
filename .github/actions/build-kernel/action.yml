@@ -1474,6 +1474,34 @@ runs:
         echo "SUSFS defconfig entries:"
         grep -nE '^CONFIG_KSU_SUSFS' "$DEFCONFIG" || true
 
+        # VMA_PAD_START() fallback for older OnePlus 5.10 tree snapshots ------------------
+        # Newer susfs4ksu 50_add_susfs (CONFIG_KSU_SUSFS_OPEN_REDIRECT hunk) references the
+        # VMA_PAD_START() macro in fs/proc/task_mmu.c. That macro is part of Google's
+        # 4kB->16kB page-size-migration backport (include/linux/pgsize_migration_inline.h)
+        # and is ABSENT on tree snapshots that predate it (e.g. *_5.10.209 / *_5.10.226),
+        # which then fail to compile: "implicit declaration of function 'VMA_PAD_START'".
+        # On such trees vma_pad_pages()==0, so VMA_PAD_START(vma) == vma->vm_end. Inject an
+        # #ifndef guard right before show_map_vma() (after every #include, so it is
+        # include-order-proof and a no-op on trees that already define the macro).
+        __TM="$COMMON_KERNEL_FOLDER/fs/proc/task_mmu.c"
+        if [ -f "$__TM" ] && grep -q 'VMA_PAD_START' "$__TM"; then
+          awk '
+            /^show_map_vma\(struct seq_file/ && !seen {
+              print "#ifndef VMA_PAD_START"
+              print "#define VMA_PAD_START(vma) ((vma)->vm_end)"
+              print "#endif"
+              seen=1
+            }
+            { print }
+          ' "$__TM" > "$__TM.vmapad" && mv "$__TM.vmapad" "$__TM"
+          if grep -q 'define VMA_PAD_START(vma) ((vma)->vm_end)' "$__TM"; then
+            echo "Injected VMA_PAD_START fallback into fs/proc/task_mmu.c"
+          else
+            echo "::warning::VMA_PAD_START referenced but show_map_vma anchor not found in task_mmu.c"
+          fi
+        fi
+        # --------------------------------------------------------------------------------
+
         echo "SUSFS_PATCH_APPLIED=true" >> "$GITHUB_ENV"
 
         echo "::endgroup::"
