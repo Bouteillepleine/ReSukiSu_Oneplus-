@@ -1474,30 +1474,31 @@ runs:
         echo "SUSFS defconfig entries:"
         grep -nE '^CONFIG_KSU_SUSFS' "$DEFCONFIG" || true
 
-        # VMA_PAD_START() fallback for older OnePlus 5.10 tree snapshots ------------------
-        # Newer susfs4ksu 50_add_susfs (CONFIG_KSU_SUSFS_OPEN_REDIRECT hunk) references the
-        # VMA_PAD_START() macro in fs/proc/task_mmu.c. That macro is part of Google's
-        # 4kB->16kB page-size-migration backport (include/linux/pgsize_migration_inline.h)
-        # and is ABSENT on tree snapshots that predate it (e.g. *_5.10.209 / *_5.10.226),
-        # which then fail to compile: "implicit declaration of function 'VMA_PAD_START'".
-        # On such trees vma_pad_pages()==0, so VMA_PAD_START(vma) == vma->vm_end. Inject an
-        # #ifndef guard right before show_map_vma() (after every #include, so it is
-        # include-order-proof and a no-op on trees that already define the macro).
+        # SUSFS <-> older-OnePlus-tree compat: neutralize susfs's spoofed-path VMA refs ---
+        # susfs4ksu 50_add_susfs (CONFIG_KSU_SUSFS_OPEN_REDIRECT hunk) adds, inside the *spoofed*
+        # branch of show_map_vma():
+        #     end = VMA_PAD_START(vma);
+        #     __fold_filemap_fixup_entry(&((struct proc_maps_private *)m->private)->iter, &end);
+        # Both come from Google's newer-ACK maps / 4kB->16kB page-migration work and are missing
+        # or mis-provided on older OnePlus tree snapshots, breaking the build three ways:
+        #   * 5.10 *_5.10.209/.226 : VMA_PAD_START macro undefined
+        #   * 6.6  *_6.6.30 / N30-SE: VMA_PAD_START + __fold_filemap_fixup_entry undefined
+        #   * some 6.1 (mt6897 A15) : VMA_PAD_START defined but expands to undeclared vma_pad_pages
+        # In the spoofed path the exact end address is cosmetic, so pin it to vma->vm_end and drop
+        # the fold. These susfs lines are uniquely deep-indented (>=3 tabs, they sit inside
+        # if(OPEN_REDIRECT){ if(!ret){ ); the tree's OWN show_map_vma/show_smap uses are 1 tab and
+        # are left untouched, so trees that properly support padding keep correct /proc maps
+        # output. Version-independent + idempotent; a no-op where susfs added nothing.
         __TM="$COMMON_KERNEL_FOLDER/fs/proc/task_mmu.c"
-        if [ -f "$__TM" ] && grep -q 'VMA_PAD_START' "$__TM"; then
-          awk '
-            /^show_map_vma\(struct seq_file/ && !seen {
-              print "#ifndef VMA_PAD_START"
-              print "#define VMA_PAD_START(vma) ((vma)->vm_end)"
-              print "#endif"
-              seen=1
-            }
-            { print }
-          ' "$__TM" > "$__TM.vmapad" && mv "$__TM.vmapad" "$__TM"
-          if grep -q 'define VMA_PAD_START(vma) ((vma)->vm_end)' "$__TM"; then
-            echo "Injected VMA_PAD_START fallback into fs/proc/task_mmu.c"
+        if [ -f "$__TM" ]; then
+          __b="$(md5sum "$__TM" | cut -d' ' -f1)"
+          sed -i -E 's@^([[:blank:]]{3,})end = VMA_PAD_START\(vma\);[[:blank:]]*$@\1end = vma->vm_end;@' "$__TM"
+          sed -i -E '/^[[:blank:]]{3,}__fold_filemap_fixup_entry\(/d' "$__TM"
+          __a="$(md5sum "$__TM" | cut -d' ' -f1)"
+          if [ "$__b" != "$__a" ]; then
+            echo "Neutralized susfs OPEN_REDIRECT VMA_PAD_START/__fold refs in fs/proc/task_mmu.c"
           else
-            echo "::warning::VMA_PAD_START referenced but show_map_vma anchor not found in task_mmu.c"
+            echo "No deep-indented susfs VMA_PAD_START/__fold refs in task_mmu.c (nothing to neutralize)"
           fi
         fi
         # --------------------------------------------------------------------------------
